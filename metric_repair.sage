@@ -56,6 +56,37 @@ def update_weights(G, Wp, ind_enc):
 
 
 # ----------------------------------------------------------------------------
+# Matrix <-> vertex-label boundary
+#
+# Matrix algorithms (MVD_Pivot, Gilbert_Jain_IOMR) work on a position-indexed
+# adjacency matrix, but a graph's vertex LABELS are frequently NOT 0..n-1 --
+# the generators build graphs from their edge list, so isolated vertices are
+# dropped and the labels have gaps. The single rule for these algorithms:
+# enter with graph_to_matrix, leave with positions_to_labels. Keeping both
+# halves of the translation here (rather than re-derived inline) is what makes
+# the position-as-label bug structurally impossible.
+# ----------------------------------------------------------------------------
+
+def graph_to_matrix(G):
+    """Return (A, verts): G's weighted adjacency matrix as a float NumPy array indexed by POSITION,
+    together with verts = G.vertices(sort=True) -- the position -> label map. Pass the cover that a
+    matrix algorithm produces (in positions) back through positions_to_labels(., verts) before
+    returning it, or downstream label-space code (verifier, reduce_solution) sees the wrong edges."""
+    verts = G.vertices(sort=True)
+    A = np.array(G.weighted_adjacency_matrix(vertices=verts), dtype=float)
+    return A, verts
+
+def positions_to_labels(S, verts):
+    """Translate a set of matrix-position pairs (i, j) into vertex-LABEL pairs (verts[i], verts[j]),
+    each normalized to (small, large). Inverse companion to graph_to_matrix."""
+    out = set()
+    for i, j in S:
+        a, b = verts[i], verts[j]
+        out.add((a, b) if a < b else (b, a))
+    return out
+
+
+# ----------------------------------------------------------------------------
 # Metric utilities
 # ----------------------------------------------------------------------------
 
@@ -296,8 +327,7 @@ def Gilbert_Jain_IOMR(Kn):
     max(M[i,k], max_{j<i}(M[i,j]-M[k,j])) regardless of the order j is processed -- so computing all
     i at once is identical to the original sequential scan. Sage matrix element access (slow) is
     also dropped in favour of a single np.array conversion."""
-    verts = Kn.vertices(sort=True)                          # positions -> labels (see MVD_Pivot note)
-    A = np.array(Kn.weighted_adjacency_matrix(vertices=verts), dtype=float)
+    A, verts = graph_to_matrix(Kn)                         # position-indexed; verts maps back to labels
     n = A.shape[0]
     S = set()
     lower = np.tril(np.ones((n, n), dtype=bool), k=-1)     # mask j < i, computed once
@@ -309,7 +339,7 @@ def Gilbert_Jain_IOMR(Kn):
             for i in idx[viol]:
                 S.add((int(i), k) if i < k else (k, int(i)))
             A[viol, k] = cand[viol]
-    return {(verts[i], verts[j]) for (i, j) in S}
+    return positions_to_labels(S, verts)
 
 def _mvd_pivot_rec(ind, X, S):
     """Recursive pivot step for MVD_Pivot. X is the (mutated) NumPy adjacency matrix; S accumulates
@@ -346,16 +376,12 @@ def _mvd_pivot_rec(ind, X, S):
 def MVD_Pivot(Kn):
     """'Fitting Metrics with Minimum Disagreement' pivot algorithm (solves general MR, not IOMR).
 
-    The recursion works in matrix-POSITION space (X is the position-indexed adjacency matrix), so the
-    cover it accumulates is in positions; we map it back to vertex LABELS before returning. This matters
-    whenever Kn's vertices are not labelled 0..n-1 -- e.g. a generator dropped an isolated vertex,
-    leaving a gap in the labels -- otherwise position pairs masquerade as label pairs and downstream
-    code (verifier, reduce_solution) silently sees the wrong cover."""
-    verts = Kn.vertices(sort=True)
-    X = np.array(Kn.weighted_adjacency_matrix(vertices=verts), dtype=float)
+    The recursion works in matrix-POSITION space, so its cover is mapped back to vertex LABELS via the
+    graph_to_matrix / positions_to_labels boundary (see that section for why this is mandatory)."""
+    X, verts = graph_to_matrix(Kn)
     S = set()
     _mvd_pivot_rec(list(range(len(verts))), X, S)
-    return {(verts[i], verts[j]) for (i, j) in S}
+    return positions_to_labels(S, verts)
 
 def l1_minimization(Gc):
     """L1 metric repair on an already-completed graph Gc.
