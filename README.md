@@ -1,59 +1,60 @@
-# Average Metric Repair (Sage)
+# Metric Repair (Sage)
 
-Code for the metric-repair experiments. SageMath 10.8 kernel.
+Metric-repair code and experiments. SageMath 10.8 kernel. This repo holds **only**
+metric-repair material; hyperbolicity/slimness/etc. studies were moved to sibling folders
+(`../average_hyperbolicity/`, `../misc_metric_repair_heuristics/`).
 
-## Library
-
-All shared functions live in one place:
+## The four core files
 
 | File | Role |
 |------|------|
-| **`packages_and_functions.sage`** | The library (graph generators, metric-repair algorithms, cycle/coherence helpers, weight utilities). Edit **here** — it's plain text and diff-friendly. |
-| `Packages_and_Functions.ipynb` | Thin loader: one cell, `load("packages_and_functions.sage")`. Kept so existing `%run Packages_and_Functions.ipynb` cells work unchanged. |
-| `Packages_and_Functions.BACKUP-2026-06-24.ipynb` | Pre-cleanup all-in-one notebook (backup). |
+| **`graph_models.sage`** | Random weighted-graph generators (`random_geometric_weighted_graph`, …) + `seed_all`. |
+| **`metric_repair.sage`** | The repair algorithms (`domr_alg`, `shortest_path_cover`, `pivot_heuristic`, `l1_min_heuristic`, …) and everything they need (encoding/weights, cycles, `complete`, `verifier`, coherence). |
+| **`run_experiments.sage`** | Headless, parametrized experiment runner. One task → one tidy CSV in `results/`. |
+| **`process_results.py`** | Merges the per-task CSVs in `results/` into one table for analysis/plotting. |
 
-Use it from any notebook with:
+`graph_models.sage` and `metric_repair.sage` are **independent** — each loads on its own.
 
+## Running it
+
+**Interactively (local Jupyter / sanity checks):**
 ```python
-%run Packages_and_Functions.ipynb     # or, directly:  load("packages_and_functions.sage")
+%run Packages_and_Functions.ipynb     # loads graph_models.sage + metric_repair.sage
+# or directly:  load("graph_models.sage"); load("metric_repair.sage")
+
+seed_all(0)
+G = random_geometric_weighted_graph(20, 0.5)
+pivot_heuristic(G)
 ```
 
-Library sections (inside the `.sage` file): imports · edge encoding & weights · metric utilities ·
-coherence · cycle functions · metric-repair algorithms · graph generators · backwards-compatible
-aliases · scratch/examples.
+**Batch / cluster:**
+```bash
+sage run_experiments.sage --n 100 --p 0.5 --reps 30 --algo all --seed 0   # one task -> results/
+sage -python process_results.py                                           # merge results/*.csv
+```
+Define your actual experiment in `run_one()` inside `run_experiments.sage` (same code runs locally
+and on the cluster). For a job array, give each task a distinct `--seed`; `seed_all` seeds Sage,
+NumPy and Python's `random` together, and the seed is recorded in every output row.
 
-## Notebooks by role
+`Packages_and_Functions.ipynb` is a thin loader kept so existing `%run Packages_and_Functions.ipynb`
+cells still work. `Packages_and_Functions.BACKUP-2026-06-24.ipynb` is the pre-split all-in-one notebook.
 
-**Experiments**
-- `EXPERIMENT - Average Metric Repair Experiments.ipynb` — main repair-algorithm experiments (writes `alg_p03.csv`).
-- `EXPERIMENT_SHORTEST_PATH_DIST.ipynb` — shortest-path distance experiments.
-
-**Paper plots**
-- `PAPER_PLOTS.ipynb` — figures for the paper; reads/writes `res_finalle/` and `plots_paper/`.
+## Other notebooks (metric repair)
+- `EXPERIMENT - Average Metric Repair Experiments.ipynb` — main repair experiments (writes `alg_p03.csv`).
+- `PAPER_PLOTS.ipynb` — paper figures; reads/writes `res_finalle/` and `plots_paper/`.
 - `EXPONENTIAL_PAPER_PLOTS.ipynb` — exponential-weight plots (writes `expon_*.csv`).
 
-**Graph-property studies**
-- `AVG_HYPERBOLICITY.ipynb` — average hyperbolicity (writes `AVG_hyperbolicity_*.pdf`, see note below).
-- `AVG_SLIMNESS.ipynb` — average slimness.
-- `OUTERPLANAR.ipynb` — outerplanar-graph study.
-- `TEST-Diameter and Hyperbolicity.ipynb` — diameter/hyperbolicity checks (loader fixed to the consolidated library).
-
-**Algorithms / scratch**
-- `SHAPLEY.ipynb` — Shapley-value heuristic.
-- `PLAYGROUND.ipynb`, `PLAYGROUND Random Hitting Set.ipynb` — scratch / exploration.
-
-## Data & outputs
+## Data & support
 
 | Folder | Contents |
 |--------|----------|
-| `res_finalle/` | Result CSVs (consumed by `PAPER_PLOTS.ipynb`). **Do not rename** — referenced by relative path. |
-| `plots_paper/` | Paper figures (consumed by `PAPER_PLOTS.ipynb`). **Do not rename.** |
-| `outputs/` | Generated hyperbolicity PDFs (tidied here). |
-| `vendor/minihit/` | Vendored minimal-hitting-set solver (from github.com/TheMatjaz/minihit). Currently unused. |
-| `Archive/` | Old split library (`Packages`, `Cycle_Mtx_functions`, `Graph_Generators`, `Metric_Repair_Algorithms`), old tests and earlier result rounds. |
+| `results/` | Per-task experiment CSVs (gitignored; the dir is kept via `.gitkeep`). |
+| `res_finalle/` | Result CSVs consumed by `PAPER_PLOTS.ipynb`. **Do not rename** (relative path). |
+| `plots_paper/` | Paper figures consumed by `PAPER_PLOTS.ipynb`. **Do not rename.** |
+| `vendor/minihit/` | Vendored minimal-hitting-set solver (github.com/TheMatjaz/minihit). Currently unused; re-enable with `import sys; sys.path.append("vendor")` before `import minihit`. |
+| `Archive/` | Old split library, old tests and earlier result rounds. |
 
-### Notes
-- **Re-running `AVG_HYPERBOLICITY.ipynb`** writes new PDFs to the folder root (its `savefig` uses bare
-  filenames). Move them into `outputs/` afterwards, or change the `savefig(...)` paths to `outputs/...`.
-- **Re-enabling `minihit`**: it now lives in `vendor/`, so add `import sys; sys.path.append("vendor")`
-  before `import minihit`, or move the package back to the folder root.
+## TODO / follow-ups
+- Fold the plotting/aggregation functions from `PAPER_PLOTS.ipynb` into `process_results.py`.
+- `left_edge_heuristic` / `pivot_heuristic` sometimes fail `verifier` — likely a repair-model
+  mismatch (`verifier` heavies covered edges to max); worth resolving before a large sweep.

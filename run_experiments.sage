@@ -1,21 +1,22 @@
 # ============================================================================
-# run_experiment.sage  --  headless, parametrized metric-repair experiment runner
+# run_experiments.sage  --  headless, parametrized metric-repair experiment runner
 #
 # One task -> one tidy CSV in results/.  Designed for batch / cluster use:
 # no plotting, no display, fully driven by CLI args, reproducible from --seed.
 #
 # Usage (local):
-#   sage run_experiment.sage --n 100 --p 0.5 --reps 30 --algo all --seed 0
+#   sage run_experiments.sage --n 100 --p 0.5 --reps 30 --algo all --seed 0
 #
 # On a cluster, launch one of these per array task with a distinct --seed, then
-# merge everything with:   sage -python collect.py
+# merge everything with:   sage -python process_results.py
 #
 # To define an actual experiment, edit run_one() below (marked TODO).
 # ============================================================================
 import argparse, os, sys, time, subprocess
 import pandas as pd
 
-load("packages_and_functions.sage")
+load("graph_models.sage")
+load("metric_repair.sage")
 
 ALGORITHMS = {
     "domr_alg":            domr_alg,

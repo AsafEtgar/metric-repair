@@ -1,100 +1,22 @@
 # ============================================================================
-# packages_and_functions.sage
+# metric_repair.sage
 #
-# Shared library for the metric-repair experiments (SageMath).
-# Load it from a notebook with:   load("packages_and_functions.sage")
-# The thin Packages_and_Functions.ipynb does exactly that, so existing
-# `%run Packages_and_Functions.ipynb` cells keep working unchanged.
+# The metric-repair library: repair algorithms and everything they need
+# (edge/weight encoding, cycle helpers, graph completion, verifier, coherence).
+# Self-contained -- does NOT depend on graph_models.sage. Load on its own, or
+# via the Packages_and_Functions.ipynb loader together with graph_models.sage.
 # ============================================================================
 
-
-# ----------------------------------------------------------------------------
-# Packages and Functions
-#
-# Shared library for the metric-repair experiments. Loaded by the other notebooks via
-# `%run Packages_and_Functions.ipynb`, so the public function names are kept stable.
-#
-# **Layout**
-#
-# 1. Imports
-# 2. Edge encoding & weights
-# 3. Metric utilities
-# 4. Coherence
-# 5. Cycle functions
-# 6. Metric-repair algorithms
-# 7. Graph generators
-# 8. Backwards-compatible aliases
-# 9. Scratch / examples
-#
-# _Cleanup notes (2026-06-24): fixed `set_weights` (`len(w)` &rarr; `len(W)`); fixed
-# `l1_min_heuristic` (called an undefined `induc` and mishandled the `(matrix, count)` return of
-# `induced_cycle_matrix`); removed the empty `shortest_path_cover` stub that silently overrode the
-# real implementation; dropped dead locals/debug prints; factored shared helpers. Renamed a few
-# awkward names, keeping the old ones as aliases (section 8)._
-#
-# _Performance pass (2026-06-24), aimed at large graphs:_
-# - _`Gilbert_Jain_IOMR`, `MVD_Pivot`: convert the Sage matrix to NumPy once and vectorize the inner
-# loops (per pivot). Results are identical to the scalar versions (see each docstring for why);
-# `MVD_Pivot`'s random-pivot sequence is unchanged._
-# - _`induced_cycle_matrix`: assembled from sparse COO triplets in one build instead of per-row
-# `np.vstack` &mdash; the main speedup for `l1_minimization` / `l1_min_heuristic` on big graphs._
-# - _`metric_triangles_matrix`: enumerate real triangles (`iter_triangles`) instead of an O(|E|^3)
-# scan over edge-index triples._
-# - _`cumulative_coherence`: `np.partition` for the top-(p+1) per row instead of a full row sort._
-# - _`get_truly_light_edges`: broadcast the four-point test over the (light, heavy) grid._
-# - _`l1_minimization`: feed the sparse constraint matrix to `linprog` directly (no dense transpose)._
-# ----------------------------------------------------------------------------
-
-
-# ----------------------------------------------------------------------------
-# 1. Imports
-# ----------------------------------------------------------------------------
-
-# --- Standard library ---
-import math
-import random
-import time
-from itertools import chain, combinations
-
-# --- Third-party ---
 import numpy as np
-import pandas as pd
 import networkx as nx
+from itertools import chain, combinations
 from scipy import sparse
-from scipy.spatial import distance_matrix
 from scipy.optimize import linprog
-from matplotlib import pyplot as plt
-
-# --- Sage ---
-from sage.groups import *
-from sage.graphs import *
-from sage.graphs.generators.random import RandomGNP
-from sage.graphs.spanning_tree import *
-from sage.graphs.distances_all_pairs import *        # exposes floyd_warshall, etc.
-from sage.graphs.connectivity import connected_components_subgraphs
 from sage.graphs.base.boost_graph import floyd_warshall_shortest_paths
 
 
 # ----------------------------------------------------------------------------
-# 1b. Reproducibility
-# ----------------------------------------------------------------------------
-
-def seed_all(seed):
-    """Seed every RNG the library draws from, so a run is reproducible from one number.
-
-    The generators use three independent sources:
-      - Sage's RNG       (graphs.RandomGNP)            -> set_random_seed
-      - NumPy's RNG      (np.random.geometric/choice)  -> np.random.seed
-      - Python's random  (random.randint)              -> random.seed
-    For a cluster job array, pass a distinct seed per task (e.g. base_seed + task_id) and record it
-    in the output so results can be regenerated exactly."""
-    set_random_seed(seed)
-    np.random.seed(seed)
-    random.seed(seed)
-
-
-# ----------------------------------------------------------------------------
-# 2. Edge encoding & weights
+# Edge encoding & weights
 # ----------------------------------------------------------------------------
 
 def make_index_encoding(G):
@@ -102,17 +24,14 @@ def make_index_encoding(G):
     Returns a dict  D: E -> [n]."""
     return dict(zip(G.edges(sort=True, labels=False), range(G.num_edges())))
 
-
 def get_edge_indices(G, D):
     """Given a graph G and an edge -> index encoding D, return the inverse dict  index -> edge."""
     return {index: edge for edge, index in D.items()}
-
 
 def get_weights(G):
     """Return the weight function w: E -> R as a dict keyed by (u, v) with u < v."""
     assert G.weighted()
     return {(u, v): w for u, v, w in G.edges(sort=True)}
-
 
 def get_weights_vector(G, D):
     """Return the weight vector indexed by the edge encoding D: E -> [n]."""
@@ -121,13 +40,11 @@ def get_weights_vector(G, D):
         w[D[edge]] = weight
     return w
 
-
 def set_weights(G, W):
     """Set edge weights in place from a list W ordered to match G.edges(sort=True)."""
     assert G.size() == len(W)                      # BUGFIX: was len(w)
     for i, e in enumerate(G.edges(sort=True)):
         G.set_edge_label(e[0], e[1], W[i])
-
 
 def update_weights(G, Wp, ind_enc):
     """Given a weighted graph G, additive corrections Wp and an index encoding ind_enc: [n] -> E,
@@ -139,13 +56,12 @@ def update_weights(G, Wp, ind_enc):
 
 
 # ----------------------------------------------------------------------------
-# 3. Metric utilities
+# Metric utilities
 # ----------------------------------------------------------------------------
 
 def check_symmetric(a, tol=1e-8):
     """True if matrix a is symmetric up to tolerance tol."""
     return np.all(np.abs(a - a.T) < tol)
-
 
 def is_metric(G):
     """True if the weighted graph G already satisfies the metric: every edge weight equals the
@@ -155,7 +71,6 @@ def is_metric(G):
         if w != apsp[u][v]:
             return False
     return True
-
 
 def verifier(G, S):
     """Verify that S is a cover of G: returns 1 if heavying-up the edges of S yields a metric, else 0."""
@@ -173,7 +88,7 @@ def verifier(G, S):
 
 
 # ----------------------------------------------------------------------------
-# 4. Coherence
+# Coherence
 # ----------------------------------------------------------------------------
 
 def cumulative_coherence(D, p):
@@ -197,7 +112,7 @@ def cumulative_coherence(D, p):
 
 
 # ----------------------------------------------------------------------------
-# 5. Cycle functions
+# Cycle functions
 # ----------------------------------------------------------------------------
 
 def is_triangle(E, i, j, k):
@@ -206,18 +121,15 @@ def is_triangle(E, i, j, k):
             and tuple(sorted([i, k])) in E
             and tuple(sorted([j, k])) in E)
 
-
 def get_list_of_edges(cyc_vtx):
     """Given the vertex list of a cycle, return its edges as sorted (u, v) tuples."""
     k = len(cyc_vtx)
     return [tuple(sorted((cyc_vtx[i], cyc_vtx[(i + 1) % k]))) for i in range(k)]
 
-
 def get_chordless_cycles(G):
     """Generator of all chordless cycles of G (as edge lists), delegating to networkx."""
     for C in nx.chordless_cycles(G.networkx_graph()):
         yield get_list_of_edges(C)
-
 
 def iter_triangles(G):
     """Yield the triangles of G as sorted vertex triples (a, b, c), a < b < c.
@@ -233,7 +145,6 @@ def iter_triangles(G):
             for c in nbrs[b] & Na:              # common neighbour of a and b
                 if c > b:
                     yield (a, b, c)
-
 
 def metric_triangles_matrix(G):
     """Dense metric testing matrix for the broken triangles of G (3 rows per triangle, each row a
@@ -255,7 +166,6 @@ def metric_triangles_matrix(G):
     if not rows:
         return np.zeros(e)
     return np.array(rows)
-
 
 def induced_cycle_matrix(G):
     """Metric testing matrix Phi for the chordless cycles of G, as a sparse CSR matrix.
@@ -289,7 +199,6 @@ def induced_cycle_matrix(G):
         return np.zeros(m), count
     return sparse.csr_matrix((data, (rows, cols)), shape=(r, m)), count
 
-
 def count_simple_cycles(G, kmin=3, kmax=0):
     """Count simple cycles of G with length in [kmin, kmax] (defaults: 3 .. G.order())."""
     if kmin < 3:
@@ -304,16 +213,36 @@ def count_simple_cycles(G, kmin=3, kmax=0):
 
 
 # ----------------------------------------------------------------------------
-# 6. Metric-repair algorithms
-#
-# Heuristics and exact-ish routines for (graph) metric repair. Each returns a *cover*: a set of
-# edges whose modification makes the graph metric.
+# Graph completion / preprocessing
+# ----------------------------------------------------------------------------
+
+def complete(G):
+    """Complete the weighted graph G by adding every missing edge xy with weight dist(x, y).
+
+    TODO: handle disconnected G (distances between components are infinite)."""
+    H = G.copy()
+    Gc = G.complement()
+    D = G.distance_all_pairs(by_weight=True)
+    H.add_edges([(e[0], e[1], D[e[0]][e[1]]) for e in Gc.edges(sort=True)])
+    return H
+
+def get_subdivided_graph(G):
+    """Unweighted graph obtained by subdividing each edge e of the weighted graph G into w(e) edges."""
+    H = G.copy()
+    for e in G.edges(labels=False, sort=True):
+        k = G.edge_label(e[0], e[1]) - 1
+        H.set_edge_label(e[0], e[1], 1)
+        H.subdivide_edge(e, k)
+    return H
+
+
+# ----------------------------------------------------------------------------
+# Metric-repair algorithms
 # ----------------------------------------------------------------------------
 
 def reduce_solution(S, G, Diff=[]):
     """Restrict an extended cover S to the edges actually present in G."""
     return {e for e in G.edges(labels=False, sort=True) if e in S}
-
 
 def domr_alg(G, with_weights=0):
     """Decrease-Only Metric Repair: the edges whose weight exceeds their shortest-path distance.
@@ -324,11 +253,6 @@ def domr_alg(G, with_weights=0):
         if e[2] != apsp[e[0]][e[1]]:
             S.add(e if with_weights else (e[0], e[1]))
     return S
-
-
-# ----------------------------------------------------------------------------
-# Gilbert & Jain (left-edge) heuristic
-# ----------------------------------------------------------------------------
 
 def Gilbert_Jain_IOMR(Kn):
     """Gilbert & Jain heuristic: for each broken triangle, arbitrarily fix the 'left' edge.
@@ -352,11 +276,6 @@ def Gilbert_Jain_IOMR(Kn):
                 S.add((int(i), k) if i < k else (k, int(i)))
             A[viol, k] = cand[viol]
     return S
-
-
-# ----------------------------------------------------------------------------
-# MVD pivot (Fitting Metrics with Minimum Disagreement)
-# ----------------------------------------------------------------------------
 
 def _mvd_pivot_rec(ind, X, S):
     """Recursive pivot step for MVD_Pivot. X is the (mutated) NumPy adjacency matrix; S accumulates
@@ -386,18 +305,12 @@ def _mvd_pivot_rec(ind, X, S):
         S.add((j, k) if j < k else (k, j))
     _mvd_pivot_rec(ind_i, X, S)
 
-
 def MVD_Pivot(Kn):
     """'Fitting Metrics with Minimum Disagreement' pivot algorithm (solves general MR, not IOMR)."""
     X = np.array(Kn.weighted_adjacency_matrix(), dtype=float)
     S = set()
     _mvd_pivot_rec(list(range(Kn.num_verts())), X, S)
     return S
-
-
-# ----------------------------------------------------------------------------
-# L1 minimization
-# ----------------------------------------------------------------------------
 
 def l1_minimization(Gc):
     """L1 metric repair on an already-completed graph Gc.
@@ -416,7 +329,6 @@ def l1_minimization(Gc):
     x = soln.x
     return {(u, v) for u, v in Gc.edges(sort=True, labels=False) if x[D[(u, v)]] > 0}
 
-
 def l1_min_heuristic(G):
     """L1 metric-repair heuristic for graph metric repair:
 
@@ -430,11 +342,6 @@ def l1_min_heuristic(G):
     G_edges = set(G.edges(sort=True, labels=False))
     return {e for e in l1_minimization(complete(G)) if e in G_edges}
 
-
-# ----------------------------------------------------------------------------
-# Shortest-path cover
-# ----------------------------------------------------------------------------
-
 def find_shortest_path(u, v, Dict):
     """Reconstruct a shortest u-v path (as a list of sorted edge tuples) from a predecessor dict."""
     end = v
@@ -444,7 +351,6 @@ def find_shortest_path(u, v, Dict):
         P.append(tuple(sorted((end, w))))
         end = w
     return P
-
 
 def shortest_path_cover(G, general=True):
     """Greedy shortest-path cover, an L(+1)-approximation for (graph) metric repair.
@@ -471,24 +377,13 @@ def shortest_path_cover(G, general=True):
         if not found_broken:
             return S
 
-
-# ----------------------------------------------------------------------------
-# Completion-based wrappers
-# ----------------------------------------------------------------------------
-
 def left_edge_heuristic(G):
     """Complete G, run the Gilbert & Jain left-edge heuristic, then reduce to a cover of G."""
     return reduce_solution(Gilbert_Jain_IOMR(complete(G)), G)
 
-
 def pivot_heuristic(G):
     """Complete G, run the MVD pivot algorithm, then reduce to a cover of G."""
     return reduce_solution(MVD_Pivot(complete(G)), G)
-
-
-# ----------------------------------------------------------------------------
-# Truly-light-edge heuristic
-# ----------------------------------------------------------------------------
 
 def on_broken_cycle(e, e_heavy, APSP_D, w_heavy, w_light):
     """Four-point check: could the light edge e and heavy edge e_heavy lie on a common broken cycle?"""
@@ -496,7 +391,6 @@ def on_broken_cycle(e, e_heavy, APSP_D, w_heavy, w_light):
     x, y = e_heavy
     return not ((w_light + APSP_D[i][x] + APSP_D[j][y] >= w_heavy)
                 and (w_light + APSP_D[i][y] + APSP_D[j][x] >= w_heavy))
-
 
 def get_truly_light_edges(G, Heavy_Edges, APSP_D):
     """Light edges that provably DO participate in some broken cycle, i.e. survive the four-point
@@ -529,7 +423,6 @@ def get_truly_light_edges(G, Heavy_Edges, APSP_D):
     keep = on_broken.any(axis=1)               # survives against at least one heavy edge
     return {Light_Edges[t] for t in np.nonzero(keep)[0]}
 
-
 def truly_light_heuristic(G):
     """Discard provably-light edges, then return the cycle dimension of the remaining subgraph
     (heavy + ambiguous edges) together with that subgraph H."""
@@ -542,194 +435,15 @@ def truly_light_heuristic(G):
 
 
 # ----------------------------------------------------------------------------
-# 7. Graph generators
-#
-# `complete`, `get_mst` and `get_subdivided_graph` transform an existing graph; the rest sample a
-# random weighted graph.
-# ----------------------------------------------------------------------------
-
-def _weighted_graph(edges, weights):
-    """Build a weighted Sage Graph from an iterable of (u, v) edges and matching weights."""
-    return Graph([(e[0], e[1], w) for e, w in zip(edges, weights)], weighted=True)
-
-
-# ----------------------------------------------------------------------------
-# Random weighted graphs
-# ----------------------------------------------------------------------------
-
-def random_weighted_graph(n, p, lower_weight=1, upper_weight=100):
-    """G(n, p) with i.i.d. integer edge weights in [lower_weight, upper_weight] (ignores metrics)."""
-    g = graphs.RandomGNP(n, p)
-    edges = g.edges(sort=True)
-    weights = [random.randint(lower_weight, upper_weight) for _ in range(len(edges))]
-    return _weighted_graph(edges, weights)
-
-
-def random_geometric_weighted_graph(n, p):
-    """G(n, p) with i.i.d. Geometric(1 - p) edge weights."""
-    g = graphs.RandomGNP(n, p)
-    edges = g.edges(sort=True)
-    weights = np.random.geometric(1 - p, len(edges))
-    return _weighted_graph(edges, weights)
-
-
-def random_exponential_weighted_graph(n, p):
-    """G(n, p) with i.i.d. Exponential(log(1/p)) edge weights, resampled until >= 1."""
-    g = graphs.RandomGNP(n, p)
-    edges = g.edges(sort=True)
-    weights = []
-    for _ in range(len(edges)):
-        w = 0
-        while w < 1:
-            w = np.random.exponential(np.log(1 / p))
-        weights.append(w)
-    return _weighted_graph(edges, weights)
-
-
-def random_metric_graph(n, p):
-    """Connected G(n, p) whose edge weights are Euclidean distances between random 5-d points."""
-    g = graphs.RandomGNP(n, p)
-    while not g.is_connected():               # can switch to biconnected if needed
-        g = graphs.RandomGNP(n, p)
-    vects = np.random.randint(0, high=15, size=(n, 5))   # one draw instead of n
-    D = distance_matrix(vects, vects)
-    edges = g.edges(sort=False)
-    return _weighted_graph(edges, [D[e[0], e[1]] for e in edges])
-
-
-def random_uniform_weighted_graph(n, p):
-    """Complete graph with U(0, 1) edge weights, thresholded to keep edges with weight > 1 - p."""
-    g = graphs.CompleteGraph(n)
-    edges = g.edges(sort=True)
-    weights = np.random.uniform(size=len(edges))
-    kept = [(e[0], e[1], w) for e, w in zip(edges, weights) if w > 1 - p]
-    return Graph(kept, weighted=True)
-
-
-# ----------------------------------------------------------------------------
-# Complete-graph generators
-# ----------------------------------------------------------------------------
-
-def uniform_complete_graph(n, L=0, U=1):
-    """Complete graph with i.i.d. U(L, U) edge weights."""
-    g = graphs.CompleteGraph(n)
-    edges = g.edges(sort=True)
-    weights = np.random.uniform(low=L, high=U, size=len(edges))
-    return _weighted_graph(edges, weights)
-
-
-def geometric_complete_graph(n, p):
-    """Complete graph with i.i.d. Geometric(1 - p) - 1 edge weights."""
-    K = graphs.CompleteGraph(n)
-    for u, v in K.edges(labels=0, sort=1):
-        K.set_edge_label(u, v, np.random.geometric(1 - p) - 1)
-    return K
-
-
-# ----------------------------------------------------------------------------
-# Transformations
-# ----------------------------------------------------------------------------
-
-def complete(G):
-    """Complete the weighted graph G by adding every missing edge xy with weight dist(x, y).
-
-    TODO: handle disconnected G (distances between components are infinite)."""
-    H = G.copy()
-    Gc = G.complement()
-    D = G.distance_all_pairs(by_weight=True)
-    H.add_edges([(e[0], e[1], D[e[0]][e[1]]) for e in Gc.edges(sort=True)])
-    return H
-
-
-def get_mst(G):
-    """Minimum spanning tree of G (Kruskal)."""
-    return G.subgraph(G.vertices(sort=False), filter_kruskal(G))
-
-
-def get_subdivided_graph(G):
-    """Unweighted graph obtained by subdividing each edge e of the weighted graph G into w(e) edges."""
-    H = G.copy()
-    for e in G.edges(labels=False, sort=True):
-        k = G.edge_label(e[0], e[1]) - 1
-        H.set_edge_label(e[0], e[1], 1)
-        H.subdivide_edge(e, k)
-    return H
-
-
-# ----------------------------------------------------------------------------
-# 8. Backwards-compatible aliases
-#
-# Old names kept so existing notebooks (`%run Packages_and_Functions.ipynb`) keep working unchanged.
+# Backwards-compatible aliases
 # ----------------------------------------------------------------------------
 
 com_coh = cumulative_coherence
-metric_triangles_mtx = metric_triangles_matrix
-get_edge_inedcies = get_edge_indices          # note: original spelling had a typo
 
+metric_triangles_mtx = metric_triangles_matrix
+
+get_edge_inedcies = get_edge_indices          # note: original spelling had a typo
 
 def MVD_Pivot_Rec(ind, x, S, Kn=None):
     """Deprecated signature wrapper around _mvd_pivot_rec (the Kn argument is ignored)."""
     return _mvd_pivot_rec(ind, x, S)
-
-
-# ----------------------------------------------------------------------------
-# 9. Scratch / examples
-#
-# Exploratory snippets kept for reference. These are intentionally commented out and are **not**
-# used by the library.
-# ----------------------------------------------------------------------------
-
-
-# ----------------------------------------------------------------------------
-# Interesting example
-# ----------------------------------------------------------------------------
-
-### Interesting Example ###
-
-# V = list(range(6))
-# E = [(1,2,1),(2,3,1),(1,4,1),(2,4,1),(2,5,5),(4,5,1),(4,6,1),(5,6,1),(3,5,1)]
-# R = Graph(weighted=True)
-# R.add_edges(E)
-# R.show(edge_labels=1)
-
-
-# ----------------------------------------------------------------------------
-# Diameter vs. p experiment
-# ----------------------------------------------------------------------------
-
-# N=100
-# AVG_diam = 0
-# for i in range(N):
-#     G = random_geometric_weighted_graph(50,.5)
-#     D = G.distance_all_pairs(by_weight=True)
-#     d_max = 0
-#     for e in G.edges(sort=True):
-#         curr = D[e[0]][e[1]]
-#         if curr > d_max:
-#             d_max = curr
-#     AVG_diam+=d_max/N
-# print(AVG_diam)
-
-# AVG_diam = 0
-# for i in range(N):
-#     G = random_geometric_weighted_graph(50,.9)
-#     D = G.distance_all_pairs(by_weight=True)
-#     d_max = 0
-#     for e in G.edges(sort=True):
-#         curr = D[e[0]][e[1]]
-#         if curr > d_max:
-#             d_max = curr
-#     AVG_diam+=d_max/N
-# print(AVG_diam)
-
-# AVG_diam = 0
-# for i in range(N):
-#     G = random_geometric_weighted_graph(50,.2)
-#     D = G.distance_all_pairs(by_weight=True)
-#     d_max = 0
-#     for e in G.edges(sort=True):
-#         curr = D[e[0]][e[1]]
-#         if curr > d_max:
-#             d_max = curr
-#     AVG_diam+=d_max/N
-# print(AVG_diam)
