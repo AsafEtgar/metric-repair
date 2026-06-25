@@ -72,18 +72,51 @@ def is_metric(G):
             return False
     return True
 
-def verifier(G, S):
-    """Verify that S is a cover of G: returns 1 if heavying-up the edges of S yields a metric, else 0."""
+def verifier(G, S, tol=1e-9):
+    """Verify that S is a cover of G: returns 1 if heavying-up the edges of S yields a metric, else 0.
+
+    Heavy every cover edge to M (the max weight) -- large enough to act like removal, since any path
+    using a cover edge then costs >= M >= every direct weight and can never undercut one. A non-cover
+    edge (u, v) is therefore unfixable iff a path avoiding the cover already undercuts it: D[u][v] < w.
+
+    The comparison uses a float tolerance. On non-integer weights D[u][v] is a sum of many float edge
+    weights, so a shortest path that merely TIES the direct edge differs from w by rounding noise; an
+    exact != would misread that tie as a break and spuriously reject a valid cover -- and the error
+    compounds on larger graphs with longer paths. (iomr_verifier already guards this the same way.)"""
     H = G.copy()
     M = max(G.edge_labels())
     for e in S:
         H.set_edge_label(e[0], e[1], M)
     D = H.distance_all_pairs(by_weight=True)
     for u, v, w in H.edges(sort=True):
-        if D[u][v] != w:
-            H.set_edge_label(u, v, D[u][v])
-            if (u, v) not in S and (v, u) not in S:
-                return 0
+        if (u, v) in S or (v, u) in S:
+            continue
+        if D[u][v] < float(w) - tol:
+            return 0
+    return 1
+
+def iomr_verifier(G, S, tol=1e-9):
+    """Verify that S is a valid INCREASE-ONLY (IOMR) cover of G: return 1 if the graph can be made
+    metric by increasing ONLY the weights of edges in S, else 0.
+
+    Like verifier(), but for the increase-only model. Remove the cover edges (in IOMR they may be
+    raised arbitrarily, even to +inf) and require that EVERY edge -- cover and non-cover alike -- is
+    unbroken by a path among the remaining (frozen) edges: d_{G-S}(u, v) >= w(u, v). Cover edges are
+    checked too, because increase-only cannot lower a cover edge that a frozen detour undercuts
+    (general repair can, which is why verifier() exempts them).
+
+    Note: IOMR feasibility implies general feasibility, so this is strictly stronger than verifier()
+    -- it never accepts a cover that verifier() rejects. A float tolerance avoids misreading a tie
+    detour as a shortcut on non-integer weights."""
+    H = G.copy()
+    for a, b in S:
+        if H.has_edge(a, b):
+            H.delete_edge(a, b)
+    D = H.distance_all_pairs(by_weight=True)
+    for u, v, w in G.edges(sort=True):
+        duv = D.get(u, {}).get(v, float('inf'))
+        if duv < float(w) - tol:
+            return 0
     return 1
 
 
@@ -263,7 +296,8 @@ def Gilbert_Jain_IOMR(Kn):
     max(M[i,k], max_{j<i}(M[i,j]-M[k,j])) regardless of the order j is processed -- so computing all
     i at once is identical to the original sequential scan. Sage matrix element access (slow) is
     also dropped in favour of a single np.array conversion."""
-    A = np.array(Kn.weighted_adjacency_matrix(), dtype=float)
+    verts = Kn.vertices(sort=True)                          # positions -> labels (see MVD_Pivot note)
+    A = np.array(Kn.weighted_adjacency_matrix(vertices=verts), dtype=float)
     n = A.shape[0]
     S = set()
     lower = np.tril(np.ones((n, n), dtype=bool), k=-1)     # mask j < i, computed once
@@ -275,7 +309,7 @@ def Gilbert_Jain_IOMR(Kn):
             for i in idx[viol]:
                 S.add((int(i), k) if i < k else (k, int(i)))
             A[viol, k] = cand[viol]
-    return S
+    return {(verts[i], verts[j]) for (i, j) in S}
 
 def _mvd_pivot_rec(ind, X, S):
     """Recursive pivot step for MVD_Pivot. X is the (mutated) NumPy adjacency matrix; S accumulates
@@ -283,34 +317,45 @@ def _mvd_pivot_rec(ind, X, S):
 
     Vectorized: for a fixed pivot i, every pair (j, k) of remaining vertices is clipped into
     [ |X[i,j]-X[i,k]| , X[i,j]+X[i,k] ] independently -- row i is untouched in this call and each
-    pair writes a distinct entry, so the whole pair loop is one broadcast clip. Only the upper
-    entries (in ind order) are written, exactly as the scalar loop did, so the (intentionally
-    asymmetric) state and the random pivot sequence are preserved bit for bit."""
+    pair writes a distinct entry, so the whole pair loop is one broadcast clip.
+
+    BUGFIX (symmetry): the original scalar code (and the first vectorized port) wrote only X[j,k]
+    and left X[k,j] stale, so the distance matrix turned asymmetric and later pivots read stale
+    distances. We now write both X[j,k] and X[k,j]. This intentionally changes MVD_Pivot's output
+    (it no longer reproduces the buggy original)."""
     if len(ind) <= 2:
         return
     i = np.random.choice(ind)
     ind_i = ind.copy()                         # don't mutate the caller's list
     ind_i.remove(i)                            # remove the current pivot
     R = np.array(ind_i)
-    p = X[i, R]                                # X[i, m] in current (possibly asymmetric) state
+    p = X[i, R]                                # X[i, m]; X is kept symmetric (see write below)
     lo = np.abs(p[:, None] - p[None, :])
     hi = p[:, None] + p[None, :]
     sub = X[np.ix_(R, R)]
     new = np.minimum(np.maximum(sub, lo), hi)  # clip into [lo, hi]
     a, b = np.triu_indices(len(R), k=1)        # pairs (a before b in ind order)
     changed = new[a, b] != sub[a, b]
-    X[R[a], R[b]] = new[a, b]                  # update only X[j,k] (j before k), like the original
+    X[R[a], R[b]] = new[a, b]                  # write X[j,k] ...
+    X[R[b], R[a]] = new[a, b]                  # ... and X[k,j]: keep the distance matrix symmetric
     for t in np.nonzero(changed)[0]:
         j, k = int(R[a[t]]), int(R[b[t]])
         S.add((j, k) if j < k else (k, j))
     _mvd_pivot_rec(ind_i, X, S)
 
 def MVD_Pivot(Kn):
-    """'Fitting Metrics with Minimum Disagreement' pivot algorithm (solves general MR, not IOMR)."""
-    X = np.array(Kn.weighted_adjacency_matrix(), dtype=float)
+    """'Fitting Metrics with Minimum Disagreement' pivot algorithm (solves general MR, not IOMR).
+
+    The recursion works in matrix-POSITION space (X is the position-indexed adjacency matrix), so the
+    cover it accumulates is in positions; we map it back to vertex LABELS before returning. This matters
+    whenever Kn's vertices are not labelled 0..n-1 -- e.g. a generator dropped an isolated vertex,
+    leaving a gap in the labels -- otherwise position pairs masquerade as label pairs and downstream
+    code (verifier, reduce_solution) silently sees the wrong cover."""
+    verts = Kn.vertices(sort=True)
+    X = np.array(Kn.weighted_adjacency_matrix(vertices=verts), dtype=float)
     S = set()
-    _mvd_pivot_rec(list(range(Kn.num_verts())), X, S)
-    return S
+    _mvd_pivot_rec(list(range(len(verts))), X, S)
+    return {(verts[i], verts[j]) for (i, j) in S}
 
 def l1_minimization(Gc):
     """L1 metric repair on an already-completed graph Gc.

@@ -56,5 +56,13 @@ cells still work. `Packages_and_Functions.BACKUP-2026-06-24.ipynb` is the pre-sp
 
 ## TODO / follow-ups
 - Fold the plotting/aggregation functions from `PAPER_PLOTS.ipynb` into `process_results.py`.
-- `left_edge_heuristic` / `pivot_heuristic` sometimes fail `verifier` — likely a repair-model
-  mismatch (`verifier` heavies covered edges to max); worth resolving before a large sweep.
+
+## Resolved
+- `left_edge_heuristic` / `pivot_heuristic` failing `verifier` (2026-06-25): **not** a model
+  mismatch. `MVD_Pivot` and `Gilbert_Jain_IOMR` built their cover from the *position-indexed*
+  adjacency matrix but returned position pairs, while generators drop isolated vertices so vertex
+  labels are non-contiguous — the verifier read positions as labels and rejected valid covers (worse
+  on sparser graphs). Fixed by mapping positions → `Kn.vertices(sort=True)`. (A separate symmetry bug
+  in the `MVD_Pivot` recursion — writing `X[j,k]` but not `X[k,j]` — was fixed at the same time.)
+  `verifier` also gained a float tolerance (`D[u][v] < w - tol`) so non-integer-weight generators
+  aren't tripped by rounding; integer-weight runs are unaffected.
