@@ -1,0 +1,22 @@
+# --- OS / editor cruft ---
+.DS_Store
+Icon?
+.vscode/
+__pycache__/
+*.pyc
+
+# --- Jupyter ---
+.ipynb_checkpoints/
+
+# --- Sage preparser cache ---
+*.sage.py
+
+# --- Experiment output (regenerable; the dir itself is kept via .gitkeep) ---
+results/*
+!results/.gitkeep
+
+# Notes:
+# - res_finalle/ and plots_paper/ ARE tracked (paper artifacts consumed by PAPER_PLOTS.ipynb).
+# - outputs/ (generated PDFs) is tracked too; ignore it if those get large.
+# - Large notebooks (e.g. AVG_HYPERBOLICITY.ipynb) carry embedded output. Consider `nbstripout`
+#   to keep diffs small if the repo grows.
