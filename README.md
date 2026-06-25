@@ -39,7 +39,9 @@ and on the cluster). For a job array, give each task a distinct `--seed`; `seed_
 NumPy and Python's `random` together, and the seed is recorded in every output row.
 
 `Packages_and_Functions.ipynb` is a thin loader kept so existing `%run Packages_and_Functions.ipynb`
-cells still work. `Packages_and_Functions.BACKUP-2026-06-24.ipynb` is the pre-split all-in-one notebook.
+cells still work. The pre-split all-in-one notebook, old experiment rounds, and the (unused)
+vendored hitting-set solver were moved out of this repo to `../metric_repair_archive/` for separate
+auditing.
 
 ## Other notebooks (metric repair)
 - `EXPERIMENT - Average Metric Repair Experiments.ipynb` — main repair experiments (writes `alg_p03.csv`).
@@ -53,8 +55,9 @@ cells still work. `Packages_and_Functions.BACKUP-2026-06-24.ipynb` is the pre-sp
 | `results/` | Per-task experiment CSVs (gitignored; the dir is kept via `.gitkeep`). |
 | `res_finalle/` | Result CSVs consumed by `PAPER_PLOTS.ipynb`. **Do not rename** (relative path). |
 | `plots_paper/` | Paper figures consumed by `PAPER_PLOTS.ipynb`. **Do not rename.** |
-| `vendor/minihit/` | Vendored minimal-hitting-set solver (github.com/TheMatjaz/minihit). Currently unused; re-enable with `import sys; sys.path.append("vendor")` before `import minihit`. |
-| `Archive/` | Old split library, old tests and earlier result rounds. |
+
+Moved out of the repo to `../metric_repair_archive/` (pending a manual audit): `Archive/` (old
+experiment rounds), `vendor/minihit/` (unused hitting-set solver), and the pre-split backup notebook.
 
 ## TODO / follow-ups
 - Fold the plotting/aggregation functions from `PAPER_PLOTS.ipynb` into `process_results.py`.
