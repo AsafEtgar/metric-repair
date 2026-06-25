@@ -44,7 +44,10 @@ vendored hitting-set solver were moved out of this repo to `../metric_repair_arc
 auditing.
 
 ## Other notebooks (metric repair)
-- `EXPERIMENT - Average Metric Repair Experiments.ipynb` — main repair experiments (writes `alg_p03.csv`).
+- `EXPERIMENT - Average Metric Repair Experiments.ipynb` — main repair experiments. Tidy/parallel
+  harness: `run_instance` → `build_tasks` → `run_sweep` (fork Pool) → long-format rows with
+  per-algorithm runtime + `valid`; `save_results` writes git-stamped `.csv.gz` to `results/`,
+  `summarize` aggregates. (`...BACKUP-2026-06-25.ipynb` is the pre-rewrite version.)
 - `PAPER_PLOTS.ipynb` — paper figures; reads/writes `res_finalle/` and `plots_paper/`.
 - `EXPONENTIAL_PAPER_PLOTS.ipynb` — exponential-weight plots (writes `expon_*.csv`).
 
