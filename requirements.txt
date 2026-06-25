@@ -1,0 +1,6 @@
+# Pure-Python metric-repair library + experiments. No Sage required.
+#   python -m venv venv && source venv/bin/activate && pip install -r requirements.txt
+numpy
+scipy
+networkx
+pandas

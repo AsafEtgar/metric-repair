@@ -11,6 +11,9 @@ __pycache__/
 # --- Sage preparser cache ---
 *.sage.py
 
+# --- Equivalence proof (regenerable by export_reference.sage) ---
+equivalence/reference.json
+
 # --- Experiment output (regenerable; the dir itself is kept via .gitkeep) ---
 results/*
 !results/.gitkeep

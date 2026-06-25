@@ -1,55 +1,79 @@
-# Metric Repair (Sage)
+# Metric Repair (pure Python)
 
-Metric-repair code and experiments. SageMath 10.8 kernel. This repo holds **only**
-metric-repair material; hyperbolicity/slimness/etc. studies were moved to sibling folders
-(`../average_hyperbolicity/`, `../misc_metric_repair_heuristics/`).
+Metric-repair code and experiments. The library is now **pure Python** (numpy / scipy / networkx);
+the original **Sage** implementation is preserved under [`sage_version/`](sage_version/) and the two
+are proven to agree in [`equivalence/`](equivalence/). This repo holds **only** metric-repair
+material; hyperbolicity/slimness/etc. studies live in sibling folders (`../average_hyperbolicity/`,
+`../misc_metric_repair_heuristics/`).
 
-## The core files
+Why the port: easy cluster deployment (`pip install numpy scipy networkx`, no Sage), no Sage-Integer
+pitfalls, and a ~100x faster `shortest_path_cover` via `scipy.sparse.csgraph`.
+
+## The core files (Python)
 
 | File | Role |
 |------|------|
-| **`graph_models.sage`** | Random weighted-graph generators (`random_geometric_weighted_graph`, …) + `seed_all`. |
-| **`metric_repair.sage`** | The repair algorithms (`domr_alg`, `shortest_path_cover`, `pivot_heuristic`, `l1_min_heuristic`, …) and exactly the support they use (encoding/weights, cycle matrix, `complete`, `verifier`). |
-| **`metric_extras.sage`** | Auxiliary helpers **not** used by any repair algorithm: metric/coherence diagnostics (`is_metric`, `cumulative_coherence`), the triangle/cycle matrices, `get_subdivided_graph`, and deprecated wrappers/aliases. Depends on `metric_repair.sage`. |
-| **`run_experiments.sage`** | Headless, parametrized experiment runner. One task → one tidy CSV in `results/`. |
-| **`process_results.py`** | Merges the per-task CSVs in `results/` into one table for analysis/plotting. |
+| **`graph_models.py`** | Random weighted-graph generators (`random_geometric_weighted_graph`, …) + `seed_all`. |
+| **`metric_repair.py`** | The repair algorithms (`domr_alg`, `shortest_path_cover`, `pivot_heuristic`, `left_edge_heuristic`, `l1_min_heuristic`) and exactly the support they use (encoding/weights, cycle matrix, `complete`, `verifier`, `iomr_verifier`). |
+| **`metric_extras.py`** | Auxiliary helpers **not** used by any repair algorithm (`is_metric`, `cumulative_coherence`, triangle/cycle matrices, `get_subdivided_graph`, deprecated wrappers/aliases). Imports from `metric_repair.py`. |
+| **`run_experiments.py`** | The experiment harness **and** a headless CLI. Importable (used by the notebook) and runnable (`python run_experiments.py …`) → one tidy CSV in `results/`. |
+| **`process_results.py`** | Merges the per-task CSVs in `results/` into one table for analysis. |
 
-`graph_models.sage` and `metric_repair.sage` are **independent** — each loads on its own.
-`metric_extras.sage` depends on `metric_repair.sage`, so load that first.
+A weighted graph is a `networkx.Graph` with a numeric `weight` on each edge; an edge is a sorted
+`(u, v)` tuple and a cover is a `set` of those. `graph_models.py` and `metric_repair.py` are
+independent; `metric_extras.py` imports from `metric_repair.py`.
 
 ## Running it
 
-**Interactively (local Jupyter / sanity checks):**
+**Interactively (Jupyter / Python ≥ 3.9 with numpy, scipy, networkx, pandas):**
 ```python
-%run Packages_and_Functions.ipynb     # loads graph_models + metric_repair + metric_extras
-# or directly:  load("graph_models.sage"); load("metric_repair.sage"); load("metric_extras.sage")
+from graph_models import seed_all, random_geometric_weighted_graph
+from metric_repair import pivot_heuristic, verifier
 
 seed_all(0)
 G = random_geometric_weighted_graph(20, 0.5)
-pivot_heuristic(G)
+S = pivot_heuristic(G)
+verifier(G, S)        # 1 == valid cover
 ```
+
+**Experiments (notebook):** `EXPERIMENT - Average Metric Repair Experiments.ipynb` imports the harness
+from `run_experiments.py` — `build_tasks` → `run_sweep` (parallel across instances) → tidy long-format
+rows (cover size, per-algorithm runtime, `valid`); `summarize` aggregates, `save_results` writes a
+git-stamped `.csv.gz` to `results/`. Plus the broken-cycle threshold experiments.
 
 **Batch / cluster:**
 ```bash
-sage run_experiments.sage --n 100 --p 0.5 --reps 30 --algo all --seed 0   # one task -> results/
-sage -python process_results.py                                           # merge results/*.csv
+python run_experiments.py --generator geometric --n 100 --p 0.3 --reps 30 --seed 0   # one task -> results/
+python process_results.py                                                            # merge results/*.csv
 ```
-Define your actual experiment in `run_one()` inside `run_experiments.sage` (same code runs locally
-and on the cluster). For a job array, give each task a distinct `--seed`; `seed_all` seeds Sage,
-NumPy and Python's `random` together, and the seed is recorded in every output row.
+For a SLURM job array give each task a distinct `--seed` (e.g. `$SLURM_ARRAY_TASK_ID`); `seed_all`
+seeds NumPy and Python's `random`, and the seed is recorded in every output row. Pin threads to 1
+(`OMP_NUM_THREADS=1`, …) so co-located single-core tasks don't oversubscribe.
 
-`Packages_and_Functions.ipynb` is a thin loader kept so existing `%run Packages_and_Functions.ipynb`
-cells still work. The pre-split all-in-one notebook, old experiment rounds, and the (unused)
-vendored hitting-set solver were moved out of this repo to `../metric_repair_archive/` for separate
-auditing.
+## Equivalence to the Sage version
 
-## Other notebooks (metric repair)
-- `EXPERIMENT - Average Metric Repair Experiments.ipynb` — main repair experiments. Tidy/parallel
-  harness: `run_instance` → `build_tasks` → `run_sweep` (fork Pool) → long-format rows with
-  per-algorithm runtime + `valid`; `save_results` writes git-stamped `.csv.gz` to `results/`,
-  `summarize` aggregates. (`...BACKUP-2026-06-25.ipynb` is the pre-rewrite version.)
+[`equivalence/`](equivalence/) proves the Python library matches Sage on everything **except graph
+generation** (which uses a different RNG by design): deterministic functions are bit-for-bit identical
+on the same input graph; `shortest_path_cover` and the `l1` support differ only by shortest-path
+tie-breaking / LP degeneracy (always valid, sizes within a few %). Run:
+```bash
+sage equivalence/export_reference.sage        # dump Sage reference outputs
+sage -python equivalence/check_equivalence.py # diff the Python library against them  ->  RESULT: PASS
+```
+
+## Sage original
+
+[`sage_version/`](sage_version/) keeps the original `.sage` library, the `Packages_and_Functions.ipynb`
+loader, and the pre-port experiment / sanity notebooks. It still runs under SageMath 10.8 and is the
+reference the equivalence proof checks against. **One intentional behavioural difference:** because the
+generators use different RNGs, the same seed gives different graphs in the two libraries — regenerate
+results with the Python library rather than expecting to replay specific Sage numbers.
+
+## Other notebooks
 - `PAPER_PLOTS.ipynb` — paper figures; reads/writes `res_finalle/` and `plots_paper/`.
-- `EXPONENTIAL_PAPER_PLOTS.ipynb` — exponential-weight plots (writes `expon_*.csv`).
+- `EXPONENTIAL_PAPER_PLOTS.ipynb` — exponential-weight plots.
+
+(These are plotting/analysis notebooks over result CSVs; they were not part of the port.)
 
 ## Data & support
 
@@ -62,15 +86,10 @@ auditing.
 Moved out of the repo to `../metric_repair_archive/` (pending a manual audit): `Archive/` (old
 experiment rounds), `vendor/minihit/` (unused hitting-set solver), and the pre-split backup notebook.
 
-## TODO / follow-ups
-- Fold the plotting/aggregation functions from `PAPER_PLOTS.ipynb` into `process_results.py`.
-
-## Resolved
-- `left_edge_heuristic` / `pivot_heuristic` failing `verifier` (2026-06-25): **not** a model
-  mismatch. `MVD_Pivot` and `Gilbert_Jain_IOMR` built their cover from the *position-indexed*
-  adjacency matrix but returned position pairs, while generators drop isolated vertices so vertex
-  labels are non-contiguous — the verifier read positions as labels and rejected valid covers (worse
-  on sparser graphs). Fixed by mapping positions → `Kn.vertices(sort=True)`. (A separate symmetry bug
-  in the `MVD_Pivot` recursion — writing `X[j,k]` but not `X[k,j]` — was fixed at the same time.)
-  `verifier` also gained a float tolerance (`D[u][v] < w - tol`) so non-integer-weight generators
-  aren't tripped by rounding; integer-weight runs are unaffected.
+## History
+- 2026-06-25: ported the library Sage → pure Python (numpy/scipy/networkx); Sage kept in
+  `sage_version/`; equivalence proven in `equivalence/`.
+- Earlier (in `sage_version/` history): fixed `MVD_Pivot` / `Gilbert_Jain_IOMR` returning
+  position-indexed covers as if they were vertex labels (generators drop isolated vertices, so labels
+  are non-contiguous), plus an `MVD_Pivot` symmetry bug and a `verifier` float tolerance. The
+  position↔label discipline is preserved in the Python port (`graph_to_matrix` / `positions_to_labels`).
