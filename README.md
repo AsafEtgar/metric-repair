@@ -4,23 +4,25 @@ Metric-repair code and experiments. SageMath 10.8 kernel. This repo holds **only
 metric-repair material; hyperbolicity/slimness/etc. studies were moved to sibling folders
 (`../average_hyperbolicity/`, `../misc_metric_repair_heuristics/`).
 
-## The four core files
+## The core files
 
 | File | Role |
 |------|------|
 | **`graph_models.sage`** | Random weighted-graph generators (`random_geometric_weighted_graph`, …) + `seed_all`. |
-| **`metric_repair.sage`** | The repair algorithms (`domr_alg`, `shortest_path_cover`, `pivot_heuristic`, `l1_min_heuristic`, …) and everything they need (encoding/weights, cycles, `complete`, `verifier`, coherence). |
+| **`metric_repair.sage`** | The repair algorithms (`domr_alg`, `shortest_path_cover`, `pivot_heuristic`, `l1_min_heuristic`, …) and exactly the support they use (encoding/weights, cycle matrix, `complete`, `verifier`). |
+| **`metric_extras.sage`** | Auxiliary helpers **not** used by any repair algorithm: metric/coherence diagnostics (`is_metric`, `cumulative_coherence`), the triangle/cycle matrices, `get_subdivided_graph`, and deprecated wrappers/aliases. Depends on `metric_repair.sage`. |
 | **`run_experiments.sage`** | Headless, parametrized experiment runner. One task → one tidy CSV in `results/`. |
 | **`process_results.py`** | Merges the per-task CSVs in `results/` into one table for analysis/plotting. |
 
 `graph_models.sage` and `metric_repair.sage` are **independent** — each loads on its own.
+`metric_extras.sage` depends on `metric_repair.sage`, so load that first.
 
 ## Running it
 
 **Interactively (local Jupyter / sanity checks):**
 ```python
-%run Packages_and_Functions.ipynb     # loads graph_models.sage + metric_repair.sage
-# or directly:  load("graph_models.sage"); load("metric_repair.sage")
+%run Packages_and_Functions.ipynb     # loads graph_models + metric_repair + metric_extras
+# or directly:  load("graph_models.sage"); load("metric_repair.sage"); load("metric_extras.sage")
 
 seed_all(0)
 G = random_geometric_weighted_graph(20, 0.5)
