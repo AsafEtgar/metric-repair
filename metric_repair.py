@@ -222,14 +222,57 @@ def induced_cycle_matrix(G):
     return sparse.csr_matrix((data, (rows, cols)), shape=(r, m)), count
 
 
+def broken_cycle_length_bound(G):
+    """Upper bound on the length (#edges) of any BROKEN cycle of G, or None when no finite bound applies
+    (a non-positive edge weight, or no edges). Capping simple-cycle enumeration at this length misses NO
+    broken cycle, so the hitting-set ILP stays exact and the rounding covers stay valid, while the
+    worst-case-exponential enumeration is bounded.
+
+    Derivation. A broken cycle of length k has a heavy edge of weight w* strictly greater than the sum
+    of its other k-1 edges. Each of those is >= w_min (the smallest edge weight in G), so
+
+        (k - 1) * w_min  <  w*  <=  w_max     =>     k <= floor(w_max / w_min) + 1
+
+    -- the DYNAMIC-RANGE bound, valid for any positive weights (integer or real). When every weight is a
+    positive INTEGER the strict inequality between integers gives w* >= (k-1)*w_min + 1, tightening it to
+
+        k <= floor((w_max - 1) / w_min) + 1       (which equals w_max when w_min == 1).
+
+    So the bound is governed by the RATIO w_max / w_min: tight (small) when the weights span a narrow
+    dynamic range, large (but still correct) when they don't -- in which case prefer the planned
+    separation-oracle LP, which never enumerates cycles. A non-positive weight breaks the derivation, so
+    the bound is withheld then. Integral-valued floats (e.g. 2.0) count as integers; any fractional
+    weight uses the real-valued form.
+    """
+    wmin = wmax = None
+    all_int = True
+    for _, _, w in G.edges(data="weight"):
+        if w is None or w <= 0:                  # a non-positive weight invalidates the derivation
+            return None
+        if float(w) != int(w):
+            all_int = False
+        wmin = w if wmin is None else min(wmin, w)
+        wmax = w if wmax is None else max(wmax, w)
+    if wmin is None:                             # no edges -> nothing to enumerate
+        return None
+    if all_int:
+        return (int(wmax) - 1) // int(wmin) + 1
+    return int(wmax // wmin) + 1
+
+
 def broken_cycles(G, max_len=None):
     """Yield the broken simple cycles of G, each as a list of sorted (u, v) edge tuples.
 
     A cycle is 'broken' iff its longest edge exceeds the sum of the others (2*max > total) -- a
     violated polygon inequality. Enumerates simple cycles via networkx; pass max_len to cap the cycle
-    length. Enumeration is worst-case exponential, so run this on the (sparse) ORIGINAL graph G, not
-    its dense completion; the planned separation-oracle LP is the scalable alternative.
+    length. When max_len is left None the cap defaults to broken_cycle_length_bound(G) (the
+    dynamic-range bound floor(w_max / w_min) + 1, tightened for integer weights) -- a cap that provably
+    loses no broken cycle, so the enumeration stays COMPLETE while running far faster. Enumeration is
+    still worst-case exponential, so run this on the (sparse) ORIGINAL graph G, not its dense
+    completion; the planned separation-oracle LP is the scalable alternative.
     """
+    if max_len is None:
+        max_len = broken_cycle_length_bound(G)      # provably complete; None -> full enumeration
     for cyc in nx.simple_cycles(G, length_bound=max_len):
         if len(cyc) < 3:
             continue
@@ -415,8 +458,11 @@ def l1_min_heuristic(G, solver="highs-ipm", reweight=0):
 # A set S is a valid general-MR cover iff it hits every broken cycle of G, so the exact minimum cover
 # is a minimum hitting set (exact_metric_repair_ilp). The covering LP relaxation, randomized-rounded,
 # is broken_cycle_rounding_heuristic. l1_rounding_heuristic instead rounds the weight-correction LP
-# above. NOTE: validity is guaranteed only when ALL broken cycles are enumerated (max_len=None); a
-# length bound makes these heuristic (a long broken cycle may go un-hit).
+# above. NOTE: exactness/validity needs ALL broken cycles enumerated. With max_len=None this holds:
+# broken_cycles auto-caps at broken_cycle_length_bound(G) (the dynamic-range bound, provably complete
+# for any positive weights), falling back to full enumeration only when even that bound is undefined.
+# Passing an explicit max_len that is too small makes these heuristic (a longer broken cycle may go
+# un-hit).
 # ----------------------------------------------------------------------------
 
 def exact_metric_repair_ilp(G, max_len=None):
@@ -426,8 +472,10 @@ def exact_metric_repair_ilp(G, max_len=None):
         min  sum_e y_e   s.t.   sum_{e in C} y_e >= 1  for every broken cycle C,   y_e in {0, 1}
 
     with scipy.optimize.milp, returning the cover {e : y_e = 1}. This is the exact optimum the
-    heuristics approximate. Enumerates broken cycles (worst-case exponential -- pass max_len on larger
-    graphs; the result is then a lower bound / may be invalid for long broken cycles)."""
+    heuristics approximate. Enumerates broken cycles (worst-case exponential); with max_len=None this
+    stays exact automatically (the enumeration auto-caps at broken_cycle_length_bound(G), which loses no
+    broken cycle). Passing an explicit, too-small max_len makes the result a lower bound / possibly
+    invalid for longer broken cycles."""
     B, n_cyc, D = broken_cycle_incidence(G, max_len)
     if n_cyc == 0:
         return set()
@@ -468,8 +516,9 @@ def broken_cycle_rounding_heuristic(G, max_len=None, rounds=20, scale=None, seed
     Solve the LP relaxation of the hitting set  min 1.y  s.t. B y >= 1, 0 <= y <= 1, then over several
     rounds sample each edge e with probability min(1, scale * y_e), unioning the picks until every
     broken cycle is hit; any cycle still un-hit after the rounds is covered greedily, so the returned
-    set is always a valid cover (given max_len=None). scale defaults to ~ln(#cycles), the standard
-    set-cover rounding factor."""
+    set is always a valid cover over the enumerated cycles. With max_len=None that enumeration is
+    complete (auto-capped at broken_cycle_length_bound(G)), so the cover is valid for G as a whole.
+    scale defaults to ~ln(#cycles), the standard set-cover rounding factor."""
     B, n_cyc, D = broken_cycle_incidence(G, max_len)
     if n_cyc == 0:
         return set()

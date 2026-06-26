@@ -18,6 +18,13 @@ equivalence/reference.json
 results/*
 !results/.gitkeep
 
+# --- Real datasets (large/private stays local; structure + examples are tracked) ---
+data/raw/*
+!data/raw/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+# (data/examples/ and data/README.md are tracked normally)
+
 # Notes:
 # - res_finalle/ and plots_paper/ ARE tracked (paper artifacts consumed by PAPER_PLOTS.ipynb).
 # - outputs/ (generated PDFs) is tracked too; ignore it if those get large.

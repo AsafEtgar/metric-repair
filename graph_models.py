@@ -45,6 +45,7 @@ def seed_all(seed):
     For a cluster job array, pass a distinct seed per task (e.g. base_seed + task_id) and record it
     in the output so results can be regenerated exactly.
     """
+    #TODO: do we need the python "random" library? I don't think we use it anywhere, or do we?
     seed = int(seed)
     np.random.seed(seed)
     random.seed(seed)
@@ -151,9 +152,14 @@ def uniform_complete_graph(n, L=0, U=1):
 
 
 def geometric_complete_graph(n, p):
-    """Complete graph with i.i.d. Geometric(1 - p) - 1 edge weights."""
+    """Complete graph with i.i.d. Geometric(1 - p) edge weights (support {1, 2, 3, ...}).
+
+    DELIBERATE DEVIATION from the Sage original, which drew Geometric(1 - p) - 1 (support {0, 1, ...})
+    and could therefore produce weight-0 edges. Weights are now >= 1 so that (a) the graph carries a
+    genuine positive metric and (b) the broken-cycle length bound applies (a 0-weight edge lengthens a
+    cycle without adding to the competing sum; see broken_cycle_length_bound in metric_repair.py)."""
     edges = _complete_edges(n)
-    weights = [np.random.geometric(1 - p) - 1 for _ in range(len(edges))]
+    weights = [np.random.geometric(1 - p) for _ in range(len(edges))]
     return _weighted_graph(edges, weights)
 
 
