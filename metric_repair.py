@@ -40,6 +40,7 @@ from scipy.sparse.csgraph import shortest_path
 # ----------------------------------------------------------------------------
 
 def _norm(u, v):
+    # TODO: This is also defined in graph_models.py, do we need both implementations?
     """Order an edge's endpoints as (small, large)."""
     return (u, v) if u <= v else (v, u)
 
@@ -346,6 +347,7 @@ def l1_min_heuristic(G):
     G_edges = set(sorted_edges(G))
     return {e for e in l1_minimization(complete(G)) if e in G_edges}
 
+# TODO: add a randomized rounding procedure, and maybe choose a different solver? which heuristics to check?
 
 def find_shortest_path(u, v, pred_row):
     """Reconstruct a shortest u->v path as a list of (position) edges from a scipy predecessor row
@@ -360,6 +362,7 @@ def find_shortest_path(u, v, pred_row):
 
 
 def shortest_path_cover(G, general=True):
+    # TODO: document the "general" flag, does it behave as I want it to?
     """Greedy shortest-path cover, an L(+1)-approximation for (graph) metric repair.
 
     Each pass computes shortest paths once; for every broken edge (direct weight > shortest distance)
@@ -408,52 +411,3 @@ def left_edge_heuristic(G):
 def pivot_heuristic(G):
     """Complete G, run the MVD pivot algorithm, then reduce to a cover of G."""
     return reduce_solution(MVD_Pivot(complete(G)), G)
-
-
-# ----------------------------------------------------------------------------
-# "Truly light" preprocessing (four-point / broken-cycle test)
-# ----------------------------------------------------------------------------
-
-def get_truly_light_edges(G, Heavy_Edges, APSP_D):
-    """Light edges that provably DO participate in some broken cycle, i.e. survive the four-point test
-    against at least one heavy edge (the provably-light ones are dropped).
-
-    Vectorized: the O(|light| * |heavy|) double loop becomes one broadcast over the (light, heavy)
-    grid, after materialising the APSP dict-of-dicts into a dense matrix once. Heavy_Edges and the
-    returned light edges are (u, v, w) triples.
-    """
-    Light_Edges = list(edges_with_weights(G) - set(Heavy_Edges))
-    Heavy = list(Heavy_Edges)
-    if not Light_Edges or not Heavy:           # no heavy edges => nothing is on a broken cycle
-        return set()
-    verts = list(APSP_D)
-    vmap = {v: a for a, v in enumerate(verts)}
-    Dmat = np.empty((len(verts), len(verts)))
-    for u, row in APSP_D.items():
-        a = vmap[u]
-        for v, d in row.items():
-            Dmat[a, vmap[v]] = d
-    li = np.fromiter((vmap[e[0]] for e in Light_Edges), int, len(Light_Edges))
-    lj = np.fromiter((vmap[e[1]] for e in Light_Edges), int, len(Light_Edges))
-    wl = np.fromiter((e[-1] for e in Light_Edges), float, len(Light_Edges))
-    hx = np.fromiter((vmap[e[0]] for e in Heavy), int, len(Heavy))
-    hy = np.fromiter((vmap[e[1]] for e in Heavy), int, len(Heavy))
-    wh = np.fromiter((e[-1] for e in Heavy), float, len(Heavy))
-    # four-point condition broadcast over (light row, heavy col)
-    cond1 = wl[:, None] + Dmat[np.ix_(li, hx)] + Dmat[np.ix_(lj, hy)] >= wh[None, :]
-    cond2 = wl[:, None] + Dmat[np.ix_(li, hy)] + Dmat[np.ix_(lj, hx)] >= wh[None, :]
-    on_broken = ~(cond1 & cond2)               # the four-point test, elementwise
-    keep = on_broken.any(axis=1)               # survives against at least one heavy edge
-    return {Light_Edges[t] for t in np.nonzero(keep)[0]}
-
-
-def truly_light_heuristic(G):
-    """Discard provably-light edges, then return the cycle dimension of the remaining subgraph
-    (heavy + ambiguous edges) together with that subgraph H."""
-    APSP_D = all_pairs_distances(G)
-    Heavy_Edges = domr_alg(G, with_weights=1)
-    Truly_Light = get_truly_light_edges(G, Heavy_Edges, APSP_D)
-    H = nx.Graph()
-    for u, v, w in (Heavy_Edges | Truly_Light):
-        H.add_edge(u, v, weight=w)
-    return H.number_of_edges() - H.number_of_nodes() + 1, H
