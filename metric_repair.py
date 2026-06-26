@@ -31,7 +31,7 @@ import numpy as np
 import networkx as nx
 from itertools import combinations
 from scipy import sparse
-from scipy.optimize import linprog
+from scipy.optimize import linprog, milp, LinearConstraint, Bounds
 from scipy.sparse.csgraph import shortest_path
 
 
@@ -222,6 +222,44 @@ def induced_cycle_matrix(G):
     return sparse.csr_matrix((data, (rows, cols)), shape=(r, m)), count
 
 
+def broken_cycles(G, max_len=None):
+    """Yield the broken simple cycles of G, each as a list of sorted (u, v) edge tuples.
+
+    A cycle is 'broken' iff its longest edge exceeds the sum of the others (2*max > total) -- a
+    violated polygon inequality. Enumerates simple cycles via networkx; pass max_len to cap the cycle
+    length. Enumeration is worst-case exponential, so run this on the (sparse) ORIGINAL graph G, not
+    its dense completion; the planned separation-oracle LP is the scalable alternative.
+    """
+    for cyc in nx.simple_cycles(G, length_bound=max_len):
+        if len(cyc) < 3:
+            continue
+        edges = get_list_of_edges(cyc)
+        ws = [G[u][v]["weight"] for (u, v) in edges]
+        if 2 * max(ws) > sum(ws):
+            yield edges
+
+
+def broken_cycle_incidence(G, max_len=None):
+    """Return (B, n_cycles, D): the 0/1 incidence matrix of broken cycles (rows) against edges
+    (columns) as a sparse CSR matrix, the number of broken cycles, and the edge encoding D: E -> [m].
+    B[c, D[e]] = 1 iff edge e lies on broken cycle c. This is the constraint matrix of the hitting-set
+    ILP (exact_metric_repair_ilp) and the covering LP (broken_cycle_rounding_heuristic) below.
+    """
+    D = make_index_encoding(G)
+    m = G.number_of_edges()
+    rows, cols = [], []
+    r = 0
+    for edges in broken_cycles(G, max_len):
+        for e in edges:
+            rows.append(r)
+            cols.append(D[e])
+        r += 1
+    if r == 0:
+        return sparse.csr_matrix((0, m)), 0, D
+    B = sparse.csr_matrix((np.ones(len(rows)), (rows, cols)), shape=(r, m))
+    return B, r, D
+
+
 # ----------------------------------------------------------------------------
 # Graph completion
 # ----------------------------------------------------------------------------
@@ -325,29 +363,138 @@ def MVD_Pivot(Kn):
     return positions_to_labels(S, verts)
 
 
-def l1_minimization(Gc):
+def _l1_solve(Gc, cycle_matrix=induced_cycle_matrix, solver="highs-ipm", reweight=0, eps=1e-3):
+    """Solve the L1 weight-correction LP on Gc; return (x, D): the correction vector and edge encoding.
+
+    Minimises sum_e x_e subject to the polygon inequality on the repaired weights w+x for every row of
+    cycle_matrix(Gc), with x >= 0.
+
+    solver: linprog method governing WHICH optimal solution is returned (the optimum value is
+    solver-independent -- only the support differs). MEASURED on this LP the effect is small (~a few
+    %): contrary to the usual "simplex is sparse" intuition, 'highs-ipm' (interior point) comes out
+    marginally SPARSER than 'highs-ds' (dual simplex) here, so it is the default. reweight > 0 runs
+    that many extra reweighted-L1 passes (cost_e <- 1/(|x_e|+eps), Candes-Wakin-Boyd) -- the more
+    reliable sparsifier; 'highs-ipm' with reweight gave the sparsest support measured.
+    """
+    phi, count = cycle_matrix(Gc)
+    D = make_index_encoding(Gc)
+    m = Gc.number_of_edges()
+    if count == 0:
+        return np.zeros(m), D
+    w = get_weights_vector(Gc, D)
+    c = np.ones(m)
+    x = np.zeros(m)
+    for _ in range(reweight + 1):
+        x = linprog(c, A_ub=-phi, b_ub=phi @ w, method=solver).x
+        c = 1.0 / (np.abs(x) + eps)            # reweight for the next pass
+    return x, D
+
+
+def l1_minimization(Gc, solver="highs-ipm", reweight=0):
     """L1 metric repair on an already-completed graph Gc.
 
     Minimises the L1 norm of the edge-weight corrections subject to all chordless-cycle (metric)
-    constraints, and returns the support of the correction (the cover)."""
-    phi, count = induced_cycle_matrix(Gc)
-    if count == 0:
-        return set()
-    D = make_index_encoding(Gc)
-    w = get_weights_vector(Gc, D)
-    m = phi.shape[1]                           # one LP variable (weight correction) per edge
-    soln = linprog(np.ones(m), A_ub=-phi, b_ub=phi @ w, method="highs")
-    x = soln.x
-    return {(u, v) for u, v in sorted_edges(Gc) if x[D[(u, v)]] > 0}
+    constraints, and returns the support of the correction (the cover). Defaults to the interior-point
+    solver ('highs-ipm'), marginally the sparsest single-solve choice measured here; set reweight > 0
+    (reweighted L1) for an even sparser support. (The LP OPTIMUM is solver-independent; only which
+    support is returned changes. Support cutoff is 1e-7 to ignore interior-point near-zeros.)"""
+    x, D = _l1_solve(Gc, induced_cycle_matrix, solver=solver, reweight=reweight)
+    return {(u, v) for u, v in sorted_edges(Gc) if x[D[(u, v)]] > 1e-7}
 
 
-def l1_min_heuristic(G):
+def l1_min_heuristic(G, solver="highs-ipm", reweight=0):
     """L1 metric-repair heuristic: complete G, solve the L1 minimisation over all metric (chordless-
     cycle) constraints of the completion, and return the support restricted to E(G)."""
     G_edges = set(sorted_edges(G))
-    return {e for e in l1_minimization(complete(G)) if e in G_edges}
+    return {e for e in l1_minimization(complete(G), solver=solver, reweight=reweight) if e in G_edges}
 
-# TODO: add a randomized rounding procedure, and maybe choose a different solver? which heuristics to check?
+
+# ----------------------------------------------------------------------------
+# Exact ILP & LP-rounding heuristics (hitting set over the broken cycles of G)
+#
+# A set S is a valid general-MR cover iff it hits every broken cycle of G, so the exact minimum cover
+# is a minimum hitting set (exact_metric_repair_ilp). The covering LP relaxation, randomized-rounded,
+# is broken_cycle_rounding_heuristic. l1_rounding_heuristic instead rounds the weight-correction LP
+# above. NOTE: validity is guaranteed only when ALL broken cycles are enumerated (max_len=None); a
+# length bound makes these heuristic (a long broken cycle may go un-hit).
+# ----------------------------------------------------------------------------
+
+def exact_metric_repair_ilp(G, max_len=None):
+    """Exact minimum metric-repair cover (general MR): the smallest edge set hitting every broken cycle
+    of G. Solves the hitting-set ILP
+
+        min  sum_e y_e   s.t.   sum_{e in C} y_e >= 1  for every broken cycle C,   y_e in {0, 1}
+
+    with scipy.optimize.milp, returning the cover {e : y_e = 1}. This is the exact optimum the
+    heuristics approximate. Enumerates broken cycles (worst-case exponential -- pass max_len on larger
+    graphs; the result is then a lower bound / may be invalid for long broken cycles)."""
+    B, n_cyc, D = broken_cycle_incidence(G, max_len)
+    if n_cyc == 0:
+        return set()
+    m = B.shape[1]
+    res = milp(c=np.ones(m), constraints=LinearConstraint(B, lb=1, ub=np.inf),
+               integrality=np.ones(m), bounds=Bounds(0, 1))
+    y = np.round(res.x).astype(int)
+    inv = {i: e for e, i in D.items()}
+    return {inv[i] for i in np.nonzero(y)[0]}
+
+
+def l1_rounding_heuristic(G, rounds=20, scale=1.0, seed=None, solver="highs-ipm"):
+    """Randomized rounding of the current L1 weight-correction LP into a (sparser) valid cover.
+
+    Solve l1 on complete(G) to get corrections x, restrict to E(G), and over several rounds sample each
+    support edge e independently with probability min(1, scale * x_e / max_x). Keep the smallest SAMPLED
+    set the verifier accepts; fall back to the full l1 support (always valid) if no sample is valid. So
+    the result is never worse than l1_min_heuristic, and usually sparser."""
+    Gc = complete(G)
+    x, D = _l1_solve(Gc, induced_cycle_matrix, solver=solver)
+    support = [e for e in sorted_edges(G) if x[D[e]] > 1e-7]
+    if not support:
+        return set()
+    xmax = max(x[D[e]] for e in support)
+    p = {e: min(1.0, scale * x[D[e]] / xmax) for e in support}
+    rng = np.random.default_rng(seed)
+    best = set(support)                                  # full support: the deterministic, valid cover
+    for _ in range(rounds):
+        S = {e for e in support if rng.random() < p[e]}
+        if S and len(S) < len(best) and verifier(G, S):
+            best = S
+    return best
+
+
+def broken_cycle_rounding_heuristic(G, max_len=None, rounds=20, scale=None, seed=None):
+    """Randomized rounding of the covering LP over ALL broken cycles of G into a valid cover.
+
+    Solve the LP relaxation of the hitting set  min 1.y  s.t. B y >= 1, 0 <= y <= 1, then over several
+    rounds sample each edge e with probability min(1, scale * y_e), unioning the picks until every
+    broken cycle is hit; any cycle still un-hit after the rounds is covered greedily, so the returned
+    set is always a valid cover (given max_len=None). scale defaults to ~ln(#cycles), the standard
+    set-cover rounding factor."""
+    B, n_cyc, D = broken_cycle_incidence(G, max_len)
+    if n_cyc == 0:
+        return set()
+    m = B.shape[1]
+    y = linprog(np.ones(m), A_ub=-B, b_ub=-np.ones(n_cyc), bounds=(0, 1), method="highs").x
+    if scale is None:
+        scale = max(1.0, float(np.log(n_cyc + 1)))
+    p = np.minimum(1.0, scale * y)
+    rng = np.random.default_rng(seed)
+    Bcsr = B.tocsr()
+    chosen = set()
+
+    def hits():
+        return np.asarray(Bcsr[:, list(chosen)].sum(axis=1)).ravel() if chosen else np.zeros(n_cyc)
+
+    for _ in range(rounds):
+        chosen.update(np.nonzero(rng.random(m) < p)[0].tolist())
+        if (hits() >= 1).all():
+            break
+    for c in np.nonzero(hits() < 1)[0]:                  # greedy top-up -> always a valid cover
+        row = Bcsr.getrow(c).indices
+        if not (set(row.tolist()) & chosen):
+            chosen.add(int(row[0]))
+    inv = {i: e for e, i in D.items()}
+    return {inv[i] for i in chosen}
 
 def find_shortest_path(u, v, pred_row):
     """Reconstruct a shortest u->v path as a list of (position) edges from a scipy predecessor row
