@@ -45,7 +45,9 @@ def seed_all(seed):
     For a cluster job array, pass a distinct seed per task (e.g. base_seed + task_id) and record it
     in the output so results can be regenerated exactly.
     """
-    #TODO: do we need the python "random" library? I don't think we use it anywhere, or do we?
+    # The `random` library IS needed: networkx.fast_gnp_random_graph (in _gnp_edges) and
+    # random_weighted_graph's random.randint both draw from Python's global RNG, so seeding NumPy alone
+    # would not make the graph *structure* reproducible.
     seed = int(seed)
     np.random.seed(seed)
     random.seed(seed)

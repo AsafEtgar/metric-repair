@@ -40,6 +40,20 @@ G = load_distance_matrix("data/examples/example_distance_matrix.csv", threshold=
 `.npy` arrays are also accepted (`load_distance_matrix("...npy")`, no labels). NaN/inf entries mean
 "not measured" → no edge; pass `zero_is_missing=True` if your file encodes a missing pair as 0.
 
+### 3. MATLAB `.mat` — `examples/example_mat_matrix.mat`
+A dissimilarity matrix stored in a MATLAB file (a dict of named variables). The single square variable
+is picked automatically; name it with `var=` when there are several.
+
+```python
+from datasets import load_mat_matrix
+G = load_mat_matrix("data/examples/example_mat_matrix.mat")            # auto-pick the matrix variable
+G = load_mat_matrix("data/raw/mydata.mat", var="D", threshold=2)      # name it; same matrix options
+```
+
+Reads MATLAB v4–v7 via `scipy.io.loadmat`. **v7.3** files are HDF5-based and unreadable by loadmat —
+the loader raises a clear error pointing at `pip install mat73` (or load with h5py and pass the array
+to `graph_from_matrix`).
+
 ## Inspect a loaded dataset
 
 ```python

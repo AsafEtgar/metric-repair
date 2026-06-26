@@ -6,7 +6,7 @@ Every loader returns a ``networkx.Graph`` whose edges carry a numeric ``weight``
 metric_repair.py / metric_extras.py. So once your data is loaded, every repair algorithm, the
 verifier, and the experiment harness work on it unchanged.
 
-TWO INPUT FORMATS are supported (see data/README.md and data/examples/ for samples):
+THREE INPUT FORMATS are supported (see data/README.md and data/examples/ for samples):
 
   1. EDGE LIST  (``load_edgelist``)        -- a CSV with columns  u, v, weight  (one row per edge).
                                               Natural for sparse / partially-observed dissimilarities.
@@ -15,6 +15,8 @@ TWO INPUT FORMATS are supported (see data/README.md and data/examples/ for sampl
                                               for fully-observed pairwise dissimilarities; this is the
                                               canonical metric-repair input (the matrix may violate the
                                               triangle inequality -- that is exactly what we repair).
+  3. MATLAB .mat (``load_mat_matrix``)     -- a distance matrix stored in a MATLAB file; reads the
+                                              chosen variable and hands it to the same matrix path.
 
 Design choices worth knowing:
   - Edges are canonicalised to (min, max) endpoints (``_norm``), matching the rest of the codebase.
@@ -102,6 +104,42 @@ def load_distance_matrix(path, threshold=None, zero_is_missing=False, labeled=Tr
     else:
         M = pd.read_csv(path, header=None).to_numpy(dtype=float)
         labels = None
+    return graph_from_matrix(M, labels=labels, threshold=threshold, zero_is_missing=zero_is_missing)
+
+
+def load_mat_matrix(path, var=None, threshold=None, zero_is_missing=False, labels=None):
+    """Load a dissimilarity matrix from a MATLAB ``.mat`` file and return a weighted Graph.
+
+    A .mat file is a dict of variable_name -> array. Pass ``var`` to name the variable holding the
+    matrix; if omitted, the single square 2-D numeric variable is used (an error lists the candidates
+    when the choice is ambiguous). ``labels`` / ``threshold`` / ``zero_is_missing`` mean what they do in
+    graph_from_matrix (labels default to 0..n-1; .mat files rarely carry usable string labels).
+
+    Uses ``scipy.io.loadmat``, which reads MATLAB v4-v7 files. MATLAB **v7.3** files are HDF5-based and
+    loadmat cannot read them -- this raises a clear error pointing at the ``mat73`` package / h5py.
+    """
+    from scipy.io import loadmat
+    try:
+        mat = loadmat(path)
+    except NotImplementedError as e:                 # v7.3 == HDF5 under the hood
+        raise NotImplementedError(
+            f"{path!r} looks like a MATLAB v7.3 (HDF5) file, which scipy.io.loadmat cannot read. "
+            f"Install `mat73` (pip install mat73) or use h5py, load the array yourself, and pass it to "
+            f"graph_from_matrix().") from e
+    variables = {k: v for k, v in mat.items() if not k.startswith("__")}   # drop loadmat metadata keys
+    if var is not None:
+        if var not in variables:
+            raise KeyError(f"variable {var!r} not in {path!r}; available: {sorted(variables)}")
+        M = variables[var]
+    else:
+        square = {k: v for k, v in variables.items()
+                  if getattr(v, "ndim", 0) == 2 and v.shape[0] == v.shape[1] and v.shape[0] > 0}
+        if len(square) != 1:
+            raise ValueError(
+                f"could not pick a matrix variable in {path!r}; pass var=... explicitly. "
+                f"Square 2-D candidates: { {k: v.shape for k, v in square.items()} or 'none'}; "
+                f"all variables: { {k: getattr(v, 'shape', type(v).__name__) for k, v in variables.items()} }")
+        M = next(iter(square.values()))
     return graph_from_matrix(M, labels=labels, threshold=threshold, zero_is_missing=zero_is_missing)
 
 
