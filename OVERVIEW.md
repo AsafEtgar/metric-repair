@@ -111,11 +111,28 @@ broken cycles. That is exactly what the separation approach below removes.
 
 ---
 
-## 6. TODO / Roadmap — separation-based LP (planned, not yet implemented)
+## 6. Separation-based LP / ILP — V1 IMPLEMENTED (cutting planes)
 
 **Goal.** Make exact / near-exact GMR scale past the enumeration ceiling (and onto larger non-complete
 graphs) by never enumerating broken cycles up front. Solve the covering LP/ILP over a *growing* subset
 of constraints, generated on demand.
+
+**Implemented (metric_repair.py):**
+- `metric_repair_lp_separation(G)` → `(lp_value, y, D, n_cuts)`. Cutting-plane LP; `lp_value` is a valid
+  **lower bound** on the exact cover size. Naive oracle (canonical shortest-detour cycles) → valid but
+  not tightest.
+- `exact_metric_repair_ilp_separation(G, max_rounds, time_limit)` → `(cover, info)`. Cutting-plane ILP
+  with an **exact** verifier-based oracle: when it converges the cover is the **proven exact minimum**.
+- `_violated_cuts` (the oracle) + `_apsp_positions` / `_cuts_to_matrix` helpers.
+
+Measured: matches the enumeration ILP exactly on small graphs; solves **n=200 to proven optimality in
+12–36 s** (enumeration died at n≈70–130), converging in 5–6 rounds. domr is near-optimal on geometric
+instances (179 vs exact 178; 535 = 535).
+
+**Remaining / "go from there":** (a) swap scipy `milp` for **Gurobi** (native lazy constraints, far
+stronger MIP) for the n=1000 push; (b) **restrict variables** to edges on some cut (shrinks the MIP at
+high density); (c) a **y-weighted oracle** to tighten the LP bound; (d) the rounding schemes below to
+turn the LP into an upper-bound cover (the bracket). The design notes below still stand for these.
 
 **Cutting-plane loop.**
 1. Start from a small constraint seed (e.g. broken triangles, or empty).

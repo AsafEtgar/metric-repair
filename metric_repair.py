@@ -636,3 +636,152 @@ def left_edge_heuristic(G):
 def pivot_heuristic(G):
     """Complete G, run the MVD pivot algorithm, then reduce to a cover of G."""
     return reduce_solution(MVD_Pivot(complete(G)), G)
+
+
+# ----------------------------------------------------------------------------
+# Separation-oracle LP / ILP  (cutting planes over broken cycles -- scales WITHOUT
+# enumerating every cycle; the route to exact/baseline covers at large n. See OVERVIEW.md section 6.)
+#
+# Model:  min 1.y   s.t.   sum_{e in C} y_e >= 1   for every broken cycle C.
+# Enumerating all C is intractable past ~n=100, so we start with NO constraints and add only VIOLATED
+# cycles found by a separation oracle, re-solving until none are violated.
+#
+# Separation oracle (naive, shortest-path based): edge (u,v) lies on a broken cycle iff some u-v path
+# is shorter (in original weights) than w_uv. One all-pairs-shortest-path call finds, for every edge,
+# its 'canonical' broken cycle = (u,v) + the shortest detour.
+#   * ILP (integral cover S): the cover edges are first heavied so detours must avoid them -- this is
+#     exactly the verifier's feasibility certificate, so the oracle is SOUND AND COMPLETE and the
+#     cutting-plane ILP returns the EXACT minimum cover.
+#   * LP (fractional y): the same canonical cycles give a valid (if not tightest) lower bound.
+# ----------------------------------------------------------------------------
+
+def _apsp_positions(G, heavy=None, big=0.0):
+    """All-pairs shortest paths (Floyd-Warshall, with predecessors) in position space. Edges in the set
+    `heavy` (normalised label pairs) are reweighted to `big` so shortest detours avoid them. Returns
+    (dist, pred, verts, idx) where verts is the position -> label map and idx its inverse."""
+    verts = sorted(G.nodes())
+    idx = {v: i for i, v in enumerate(verts)}
+    A = np.zeros((len(verts), len(verts)))
+    for u, v, w in sorted_edges(G, weight=True):
+        a, b = idx[u], idx[v]
+        A[a, b] = A[b, a] = big if (heavy is not None and (u, v) in heavy) else float(w)
+    dist, pred = shortest_path(A, method="FW", directed=False, return_predecessors=True)
+    return dist, pred, verts, idx
+
+
+def _violated_cuts(G, sol, D, integral, tol=1e-6, max_cuts=None):
+    """Separation oracle. Return a list of violated broken-cycle constraints for the current solution
+    `sol` (a length-m array indexed by D). Each cut is a frozenset of edge-index columns -- the support
+    of one constraint sum_{e in C} y_e >= 1.
+
+    integral=True : treat sol as a 0/1 cover S; heavy the cover edges so detours avoid them, then every
+                    non-cover edge undercut by such a detour yields a cycle S fails to hit. This is the
+                    verifier's certificate -- sound AND complete, so a clean pass proves S optimal.
+    integral=False: treat sol as fractional; report each edge's canonical (shortest-detour) cycle when
+                    its y-sum is < 1. Sound (real violated constraints) but not complete.
+    """
+    if integral:
+        S = {e for e in D if sol[D[e]] > 0.5}
+        big = sum(w for _, _, w in sorted_edges(G, weight=True)) + 1.0
+        dist, pred, verts, idx = _apsp_positions(G, heavy=S, big=big)
+    else:
+        S = None
+        dist, pred, verts, idx = _apsp_positions(G)
+    cuts, seen = [], set()
+    for (u, v) in sorted_edges(G):
+        if integral and (u, v) in S:                        # cover edges are exempt (re-weightable)
+            continue
+        a, b = idx[u], idx[v]
+        if dist[a, b] < G[u][v]["weight"] - tol:            # (u,v) undercut -> broken cycle through it
+            cols = {D[(verts[i], verts[j])] for (i, j) in find_shortest_path(a, b, pred[a])}
+            cols.add(D[(u, v)])
+            key = frozenset(cols)
+            if key in seen:
+                continue
+            if integral or sum(sol[c] for c in cols) < 1.0 - tol:
+                seen.add(key)
+                cuts.append(key)
+                if max_cuts and len(cuts) >= max_cuts:
+                    break
+    return cuts
+
+
+def _cuts_to_matrix(rows, m):
+    """Stack a list of cuts (each a set of columns) into a sparse 0/1 constraint matrix (n_cuts x m)."""
+    data, ri, ci = [], [], []
+    for k, cyc in enumerate(rows):
+        for c in cyc:
+            ri.append(k)
+            ci.append(c)
+            data.append(1.0)
+    return sparse.csr_matrix((data, (ri, ci)), shape=(len(rows), m))
+
+
+def metric_repair_lp_separation(G, max_rounds=200, tol=1e-6, solver="highs", verbose=False):
+    """Cutting-plane LP lower bound on the minimum general-MR cover, via the separation oracle.
+
+    Solves  min 1.y  s.t. (added broken-cycle constraints) y >= 1, 0 <= y <= 1, adding only violated
+    cycles until the oracle finds none. Returns (lp_value, y, D, n_cuts). `lp_value` is a valid LOWER
+    BOUND on the exact cover size (hence on every heuristic's cover size). It never enumerates all
+    cycles, so it scales to large n. The naive oracle separates on canonical (shortest-detour) cycles,
+    so the bound is valid but may not be the tightest achievable LP bound (a y-weighted oracle would
+    tighten it -- a natural next step)."""
+    D = make_index_encoding(G)
+    m = G.number_of_edges()
+    rows, seen = [], set()
+    y = np.zeros(m)
+    val = 0.0
+    for r in range(max_rounds):
+        cuts = [c for c in _violated_cuts(G, y, D, integral=False, tol=tol) if c not in seen]
+        if not cuts:
+            break
+        for c in cuts:
+            seen.add(c)
+            rows.append(c)
+        B = _cuts_to_matrix(rows, m)
+        res = linprog(np.ones(m), A_ub=-B, b_ub=-np.ones(len(rows)), bounds=(0, 1), method=solver)
+        y, val = res.x, res.fun
+        if verbose:
+            print(f"[lp-sep] round {r}: {len(rows)} cuts, lp={val:.4f}")
+    return val, y, D, len(rows)
+
+
+def exact_metric_repair_ilp_separation(G, max_rounds=500, time_limit=None, tol=1e-6, verbose=False):
+    """EXACT minimum general-MR cover via a cutting-plane ILP with lazily-added broken-cycle constraints.
+
+    Repeats: solve the hitting-set ILP over the current cuts -> cover S; run the (exact, verifier-based)
+    separation oracle for broken cycles S misses; add them; re-solve. When the oracle finds none, S hits
+    EVERY broken cycle and is the exact minimum (a relaxation feasible at its own optimum is optimal). It
+    never enumerates all cycles, so memory stays small -- but minimum hitting set is NP-hard, so worst
+    case is exponential time. Bound it with max_rounds and/or time_limit (seconds per ILP solve).
+
+    Returns (cover, info). If info['converged'] is True the cover is the proven exact optimum; if False
+    (budget hit) the ILP objective is still a valid LOWER BOUND on the optimum, but the returned cover
+    may not be valid -- check with verifier(G, cover)."""
+    D = make_index_encoding(G)
+    m = G.number_of_edges()
+    inv = {i: e for e, i in D.items()}
+    rows, seen = [], set()
+    S = set()
+    sol = np.zeros(m)
+    converged = False
+    r = 0
+    for r in range(max_rounds):
+        cuts = [c for c in _violated_cuts(G, sol, D, integral=True, tol=tol) if c not in seen]
+        if not cuts:
+            converged = True
+            break
+        for c in cuts:
+            seen.add(c)
+            rows.append(c)
+        B = _cuts_to_matrix(rows, m)
+        opts = {"time_limit": time_limit} if time_limit else {}
+        res = milp(c=np.ones(m), constraints=LinearConstraint(B, lb=1, ub=np.inf),
+                   integrality=np.ones(m), bounds=Bounds(0, 1), options=opts)
+        if res.x is None:                                   # solver gave up (time limit, no incumbent)
+            break
+        sol = np.round(res.x)
+        S = {inv[i] for i in np.nonzero(sol > 0.5)[0]}
+        if verbose:
+            print(f"[ilp-sep] round {r}: {len(rows)} cuts, |S|={len(S)}")
+    return S, {"rounds": r + 1, "constraints": len(rows), "converged": converged, "size": len(S)}
