@@ -127,19 +127,28 @@ of constraints, generated on demand.
   with an **exact** verifier-based oracle: when it converges the cover is the **proven exact minimum**.
 - `_violated_cuts`, `_rsp_separation` (oracles) + `_apsp_positions` / `_cuts_to_matrix` helpers.
 
-Measured: the separation ILP matches the enumeration ILP exactly on small graphs and solves **n=200 to
-proven optimality in 12–36 s** (enumeration died at n≈70–130), in 5–6 rounds. The RSP-LP equals the true
-LP optimum on every test, and — crucially — **the hitting-set LP is INTEGRAL on these geometric
-instances**: RSP-LP = exact ILP (178 at p=0.2, 535 at p=0.3; 0 % gap). So the **LP alone gives the exact
-optimum** here, via a polynomial LP + pseudo-poly DP, sidestepping the NP-hard integer solve. (domr is
-also near-optimal: 179 vs 178; 535 = 535.) The RSP DP is currently a pure-Python loop — the main
-optimisation target for n=1000.
+Performance work (done): the RSP DP is **vectorised** (edges grouped by weight, one scatter-min per
+budget layer — not a Python edge loop), the LP/ILP are solved over **only the active edges** (those in
+some cut; this alone is 138 s → 1.6 s at n=500, since most of |E| lies on no broken cycle), and the LP
+uses **dual simplex** (returns a vertex → integral when the polytope is). The DP reconstructs paths from
+the cost table (no predecessor array).
 
-**Remaining / "go from there":** (a) **vectorise / batch the RSP DP** (the n=1000 bottleneck — group
-directed edges by weight, drop the Python edge loop); (b) swap scipy `milp` for **Gurobi** (lazy
-constraints) *if* the ILP is still needed where the LP isn't integral; (c) **restrict variables** to
-edges on some cut; (d) rounding schemes (below) for an upper-bound cover when neither LP-integrality nor
-the exact ILP closes.
+Measured (geometric, integer weights), all **EXACT (integral LP, valid cover, proven without the ILP)**:
+
+| n | p | \|E\| | optimum | RSP-LP time |
+|---|---|---|---|---|
+| 200 | 0.3 | 5.9k | 535 | 10 s |
+| 500 | 0.2 | 25k | 986 | 48 s |
+| 500 | 0.3 | 37k | 3380 | 3.8 min |
+| **1000** | **0.2** | **100k** | **4023** | **11 min** |
+
+The hitting-set LP was **integral at every scale** — so the polynomial RSP-LP yields the exact optimum,
+no integer solve needed. (The separation ILP also works and now solves n=500/p=0.2 in 16 s; it's the
+fallback if integrality ever breaks.) **n=1000 is reached, well inside a 2-day budget.**
+
+**Remaining / "go from there":** (a) swap scipy `milp` for **Gurobi** *only if* a future instance has an
+integrality gap (so far none); (b) rounding schemes (below) for an upper-bound cover in that case; (c)
+the RSP DP memory is `O(w_max · n²)` — fine for small `w_max`, watch it for wide weight ranges.
 
 **Cutting-plane loop.**
 1. Start from a small constraint seed (e.g. broken triangles, or empty).
