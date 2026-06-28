@@ -118,21 +118,28 @@ graphs) by never enumerating broken cycles up front. Solve the covering LP/ILP o
 of constraints, generated on demand.
 
 **Implemented (metric_repair.py):**
-- `metric_repair_lp_separation(G)` → `(lp_value, y, D, n_cuts)`. Cutting-plane LP; `lp_value` is a valid
-  **lower bound** on the exact cover size. Naive oracle (canonical shortest-detour cycles) → valid but
-  not tightest.
+- `metric_repair_lp_separation(G, oracle="rsp"|"naive")` → `(lp_value, y, D, n_cuts)`. Cutting-plane LP;
+  `lp_value` is a valid **lower bound** on the exact cover size. `oracle="rsp"` (default) uses an EXACT
+  weight-constrained-shortest-path separation (`_rsp_separation`, a weight-budget DP — pseudo-poly in
+  w_max), so `lp_value` is the **true LP optimum over all broken cycles** (tightest bound); `"naive"`
+  uses the canonical shortest-detour oracle (`_violated_cuts`, faster but loose).
 - `exact_metric_repair_ilp_separation(G, max_rounds, time_limit)` → `(cover, info)`. Cutting-plane ILP
   with an **exact** verifier-based oracle: when it converges the cover is the **proven exact minimum**.
-- `_violated_cuts` (the oracle) + `_apsp_positions` / `_cuts_to_matrix` helpers.
+- `_violated_cuts`, `_rsp_separation` (oracles) + `_apsp_positions` / `_cuts_to_matrix` helpers.
 
-Measured: matches the enumeration ILP exactly on small graphs; solves **n=200 to proven optimality in
-12–36 s** (enumeration died at n≈70–130), converging in 5–6 rounds. domr is near-optimal on geometric
-instances (179 vs exact 178; 535 = 535).
+Measured: the separation ILP matches the enumeration ILP exactly on small graphs and solves **n=200 to
+proven optimality in 12–36 s** (enumeration died at n≈70–130), in 5–6 rounds. The RSP-LP equals the true
+LP optimum on every test, and — crucially — **the hitting-set LP is INTEGRAL on these geometric
+instances**: RSP-LP = exact ILP (178 at p=0.2, 535 at p=0.3; 0 % gap). So the **LP alone gives the exact
+optimum** here, via a polynomial LP + pseudo-poly DP, sidestepping the NP-hard integer solve. (domr is
+also near-optimal: 179 vs 178; 535 = 535.) The RSP DP is currently a pure-Python loop — the main
+optimisation target for n=1000.
 
-**Remaining / "go from there":** (a) swap scipy `milp` for **Gurobi** (native lazy constraints, far
-stronger MIP) for the n=1000 push; (b) **restrict variables** to edges on some cut (shrinks the MIP at
-high density); (c) a **y-weighted oracle** to tighten the LP bound; (d) the rounding schemes below to
-turn the LP into an upper-bound cover (the bracket). The design notes below still stand for these.
+**Remaining / "go from there":** (a) **vectorise / batch the RSP DP** (the n=1000 bottleneck — group
+directed edges by weight, drop the Python edge loop); (b) swap scipy `milp` for **Gurobi** (lazy
+constraints) *if* the ILP is still needed where the LP isn't integral; (c) **restrict variables** to
+edges on some cut; (d) rounding schemes (below) for an upper-bound cover when neither LP-integrality nor
+the exact ILP closes.
 
 **Cutting-plane loop.**
 1. Start from a small constraint seed (e.g. broken triangles, or empty).

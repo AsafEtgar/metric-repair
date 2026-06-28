@@ -717,22 +717,108 @@ def _cuts_to_matrix(rows, m):
     return sparse.csr_matrix((data, (ri, ci)), shape=(len(rows), m))
 
 
-def metric_repair_lp_separation(G, max_rounds=200, tol=1e-6, solver="highs", verbose=False):
-    """Cutting-plane LP lower bound on the minimum general-MR cover, via the separation oracle.
+def _rsp_separation(G, yvec, D, tol=1e-6, max_cuts=None):
+    """EXACT restricted-shortest-path separation for the fractional LP (tightest possible cuts).
+
+    For each edge (u,v) it finds the minimum-y-cost u->v path whose ORIGINAL-weight length is < w_uv --
+    so the cycle (u,v)+path is genuinely broken -- and reports that cycle if y_uv + cost < 1 (its
+    hitting-set constraint is violated). Because each per-edge minimum is exact, a pass that finds
+    nothing PROVES no broken cycle is violated, so the cutting-plane LP then equals the TRUE optimum over
+    all broken cycles (the tightest lower bound) -- unlike the naive shortest-detour oracle (_violated_cuts).
+
+    This per-edge minimisation is the weight-constrained shortest path problem (Garey & Johnson ND30),
+    weakly NP-hard. The weight-budget DP below is pseudo-polynomial in the max edge weight w_max -- which
+    is small for integer-weight instances (it equals the broken-cycle length bound), so it is cheap here.
+    cost[b][s, v] = min y-cost of an s->v path of total ORIGINAL weight EXACTLY b. Requires positive
+    INTEGER weights; returns None otherwise so the caller can fall back to the naive oracle.
+    """
+    wmax = 0
+    for _, _, w in sorted_edges(G, weight=True):
+        if w < 1 or float(w) != int(w):
+            return None
+        wmax = max(wmax, int(w))
+    verts = sorted(G.nodes())
+    idx = {v: i for i, v in enumerate(verts)}
+    n = len(verts)
+    B = wmax - 1                                      # path weight < w_uv <= w_max  =>  budget <= w_max-1
+    if B < 1:                                         # all weights 1 -> no broken cycle is possible
+        return []
+    dedges = []                                       # directed: arriving at `head` from `tail`
+    for (a, b) in sorted_edges(G):
+        ia, ib, w, yv = idx[a], idx[b], int(G[a][b]["weight"]), yvec[D[(a, b)]]
+        dedges.append((ia, ib, w, yv))
+        dedges.append((ib, ia, w, yv))
+    cost = np.full((B + 1, n, n), np.inf)             # [budget, source, node]
+    pred = np.full((B + 1, n, n), -1, dtype=np.int64)
+    np.fill_diagonal(cost[0], 0.0)                    # weight-0 path: each source reaches itself
+    for b in range(1, B + 1):
+        cb, pb = cost[b], pred[b]
+        for (tail, head, w, yv) in dedges:
+            if w > b:
+                continue
+            cand = cost[b - w, :, tail] + yv          # (n_sources,)
+            mask = cand < cb[:, head]
+            if mask.any():
+                cb[mask, head] = cand[mask]
+                pb[mask, head] = tail
+    cuts, seen = [], set()
+    for (u, v) in sorted_edges(G):
+        s, t = idx[u], idx[v]
+        wuv, yuv = int(G[u][v]["weight"]), yvec[D[(u, v)]]
+        bcap = min(wuv - 1, B)
+        col = cost[0:bcap + 1, s, t]
+        bstar = int(np.argmin(col))
+        best = col[bstar]
+        if not np.isfinite(best) or yuv + best >= 1.0 - tol:
+            continue
+        cols = {D[(u, v)]}                            # reconstruct the detour s..t at budget bstar
+        node, bb = t, bstar
+        while node != s:
+            x = int(pred[bb, s, node])
+            if x < 0:
+                break
+            a_lbl, b_lbl = verts[x], verts[node]
+            e = (a_lbl, b_lbl) if a_lbl <= b_lbl else (b_lbl, a_lbl)
+            cols.add(D[e])
+            bb -= int(G[e[0]][e[1]]["weight"])
+            node = x
+        key = frozenset(cols)
+        if key not in seen:
+            seen.add(key)
+            cuts.append(key)
+            if max_cuts and len(cuts) >= max_cuts:
+                break
+    return cuts
+
+
+def metric_repair_lp_separation(G, max_rounds=200, tol=1e-6, solver="highs", oracle="rsp",
+                                verbose=False):
+    """Cutting-plane LP lower bound on the minimum general-MR cover, via a separation oracle.
 
     Solves  min 1.y  s.t. (added broken-cycle constraints) y >= 1, 0 <= y <= 1, adding only violated
     cycles until the oracle finds none. Returns (lp_value, y, D, n_cuts). `lp_value` is a valid LOWER
-    BOUND on the exact cover size (hence on every heuristic's cover size). It never enumerates all
-    cycles, so it scales to large n. The naive oracle separates on canonical (shortest-detour) cycles,
-    so the bound is valid but may not be the tightest achievable LP bound (a y-weighted oracle would
-    tighten it -- a natural next step)."""
+    BOUND on the exact cover size (hence on every heuristic's cover size), and it never enumerates all
+    cycles, so it scales to large n.
+
+    oracle:
+      "rsp"   (default) -- EXACT weight-constrained shortest path separation (_rsp_separation). The
+              resulting `lp_value` is the TRUE optimum over all broken cycles (tightest bound). Needs
+              positive integer weights; automatically falls back to "naive" otherwise.
+      "naive" -- separates only on canonical (shortest-detour) cycles (_violated_cuts). Faster per round
+              but the bound may be loose (it converges to the canonical-cycle LP).
+    """
     D = make_index_encoding(G)
     m = G.number_of_edges()
     rows, seen = [], set()
     y = np.zeros(m)
     val = 0.0
+    use_rsp = (oracle == "rsp")
     for r in range(max_rounds):
-        cuts = [c for c in _violated_cuts(G, y, D, integral=False, tol=tol) if c not in seen]
+        cuts = _rsp_separation(G, y, D, tol=tol) if use_rsp else None
+        if cuts is None:                                 # non-integer weights -> fall back to naive
+            use_rsp = False
+            cuts = _violated_cuts(G, y, D, integral=False, tol=tol)
+        cuts = [c for c in cuts if c not in seen]
         if not cuts:
             break
         for c in cuts:
@@ -742,7 +828,7 @@ def metric_repair_lp_separation(G, max_rounds=200, tol=1e-6, solver="highs", ver
         res = linprog(np.ones(m), A_ub=-B, b_ub=-np.ones(len(rows)), bounds=(0, 1), method=solver)
         y, val = res.x, res.fun
         if verbose:
-            print(f"[lp-sep] round {r}: {len(rows)} cuts, lp={val:.4f}")
+            print(f"[lp-sep] round {r}: {len(rows)} cuts, lp={val:.4f}  ({'rsp' if use_rsp else 'naive'})")
     return val, y, D, len(rows)
 
 
