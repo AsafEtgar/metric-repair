@@ -282,18 +282,30 @@ def broken_cycles(G, max_len=None):
             yield edges
 
 
-def broken_cycle_incidence(G, max_len=None):
+def broken_cycle_incidence(G, max_len=None, drop_max=False):
     """Return (B, n_cycles, D): the 0/1 incidence matrix of broken cycles (rows) against edges
     (columns) as a sparse CSR matrix, the number of broken cycles, and the edge encoding D: E -> [m].
     B[c, D[e]] = 1 iff edge e lies on broken cycle c. This is the constraint matrix of the hitting-set
     ILP (exact_metric_repair_ilp) and the covering LP (broken_cycle_rounding_heuristic) below.
+
+    drop_max=True gives the INCREASE-ONLY (IOMR) formulation: the maximum-weight edge of each broken
+    cycle is left OUT of that cycle's row, so the cover is forced to hit a LIGHT edge. This is exactly
+    right for increase-only repair -- a broken cycle (2*max > total) can only be fixed by raising its
+    light edges; raising the heavy edge makes it worse, so hitting a cycle at its heavy edge is useless.
+    The maximum edge of a broken cycle is UNIQUE (two edges tied at max would give total >= 2*max,
+    contradicting 2*max > total), so there is never any tie to break.
     """
     D = make_index_encoding(G)
     m = G.number_of_edges()
     rows, cols = [], []
     r = 0
     for edges in broken_cycles(G, max_len):
-        for e in edges:
+        if drop_max:
+            emax = max(edges, key=lambda e: G[e[0]][e[1]]["weight"])
+            row_edges = [e for e in edges if e != emax]        # IOMR: force a hit on a light edge
+        else:
+            row_edges = edges
+        for e in row_edges:
             rows.append(r)
             cols.append(D[e])
         r += 1
@@ -488,9 +500,9 @@ def l1_min_heuristic(G, solver="highs-ipm", reweight=0, general=False):
 # un-hit).
 # ----------------------------------------------------------------------------
 
-def exact_metric_repair_ilp(G, max_len=None):
-    """Exact minimum metric-repair cover (general MR): the smallest edge set hitting every broken cycle
-    of G. Solves the hitting-set ILP
+def exact_metric_repair_ilp(G, max_len=None, iomr=False):
+    """Exact minimum metric-repair cover: the smallest edge set hitting every broken cycle of G. Solves
+    the hitting-set ILP
 
         min  sum_e y_e   s.t.   sum_{e in C} y_e >= 1  for every broken cycle C,   y_e in {0, 1}
 
@@ -498,14 +510,19 @@ def exact_metric_repair_ilp(G, max_len=None):
     heuristics approximate. Enumerates broken cycles (worst-case exponential); with max_len=None this
     stays exact automatically (the enumeration auto-caps at broken_cycle_length_bound(G), which loses no
     broken cycle). Passing an explicit, too-small max_len makes the result a lower bound / possibly
-    invalid for longer broken cycles."""
-    B, n_cyc, D = broken_cycle_incidence(G, max_len)
+    invalid for longer broken cycles.
+
+    iomr=False (default) is general MR (hit any edge of each cycle). iomr=True is the exact INCREASE-ONLY
+    (IOMR) optimum: each cycle's row omits its maximum-weight edge (drop_max), so the cover must hit a
+    LIGHT edge -- the correct increase-only constraint (see broken_cycle_incidence). Validate with
+    iomr_verifier(G, cover); general MR with verifier(G, cover)."""
+    B, n_cyc, D = broken_cycle_incidence(G, max_len, drop_max=iomr)
     if n_cyc == 0:
         return set()
     m = B.shape[1]
     res = milp(c=np.ones(m), constraints=LinearConstraint(B, lb=1, ub=np.inf),
                integrality=np.ones(m), bounds=Bounds(0, 1))
-    y = np.round(res.x).astype(int)
+    y = np.round(res.x).astype(int) #todo: why do we need to round for an ilp?
     inv = {i: e for e, i in D.items()}
     return {inv[i] for i in np.nonzero(y)[0]}
 
@@ -669,16 +686,24 @@ def _apsp_positions(G, heavy=None, big=0.0):
     return dist, pred, verts, idx
 
 
-def _violated_cuts(G, sol, D, integral, tol=1e-6, max_cuts=None):
+def _violated_cuts(G, sol, D, integral, tol=1e-6, max_cuts=None, iomr=False):
     """Separation oracle. Return a list of violated broken-cycle constraints for the current solution
     `sol` (a length-m array indexed by D). Each cut is a frozenset of edge-index columns -- the support
-    of one constraint sum_{e in C} y_e >= 1.
+    of one constraint sum_{e in cut} y_e >= 1.
 
     integral=True : treat sol as a 0/1 cover S; heavy the cover edges so detours avoid them, then every
-                    non-cover edge undercut by such a detour yields a cycle S fails to hit. This is the
-                    verifier's certificate -- sound AND complete, so a clean pass proves S optimal.
+                    edge undercut by such a detour yields a cycle S fails to hit. This is the verifier's
+                    certificate -- sound AND complete, so a clean pass proves S optimal.
     integral=False: treat sol as fractional; report each edge's canonical (shortest-detour) cycle when
                     its y-sum is < 1. Sound (real violated constraints) but not complete.
+
+    iomr=False (general MR): the cut is the whole broken cycle {detour} + {(u,v)}; a cover edge (u,v) in
+        S is exempt (it can be re-weighted down, so it never needs a detour). iomr=True (increase-only):
+        the cut OMITS the undercut edge (u,v) -- which is always the cycle's unique maximum, since its
+        weight exceeds the detour's total -- forcing a hit on a LIGHT edge. Cover edges are then NOT
+        exempt: increase-only cannot lower a heavy cover edge that a frozen detour undercuts, so such a
+        cycle must still be hit at a light edge (this is exactly what iomr_verifier checks). Dropping the
+        skip is what makes the integral oracle sound AND complete for IOMR, not just a column change.
     """
     if integral:
         S = {e for e in D if sol[D[e]] > 0.5}
@@ -689,14 +714,15 @@ def _violated_cuts(G, sol, D, integral, tol=1e-6, max_cuts=None):
         dist, pred, verts, idx = _apsp_positions(G)
     cuts, seen = [], set()
     for (u, v) in sorted_edges(G):
-        if integral and (u, v) in S:                        # cover edges are exempt (re-weightable)
+        if integral and not iomr and (u, v) in S:           # general MR: cover edges are re-weightable
             continue
         a, b = idx[u], idx[v]
         if dist[a, b] < G[u][v]["weight"] - tol:            # (u,v) undercut -> broken cycle through it
             cols = {D[(verts[i], verts[j])] for (i, j) in find_shortest_path(a, b, pred[a])}
-            cols.add(D[(u, v)])
+            if not iomr:
+                cols.add(D[(u, v)])                         # general MR: heavy edge may also be hit
             key = frozenset(cols)
-            if key in seen:
+            if not cols or key in seen:
                 continue
             if integral or sum(sol[c] for c in cols) < 1.0 - tol:
                 seen.add(key)
@@ -733,14 +759,20 @@ def _restricted_matrix(rows):
     return sparse.csr_matrix((data, (ri, ci)), shape=(len(rows), len(active))), active
 
 
-def _rsp_separation(G, yvec, D, tol=1e-6, max_cuts=None):
+def _rsp_separation(G, yvec, D, tol=1e-6, max_cuts=None, iomr=False):
     """EXACT restricted-shortest-path separation for the fractional LP (tightest possible cuts).
 
     For each edge (u,v) it finds the minimum-y-cost u->v path whose ORIGINAL-weight length is < w_uv --
-    so the cycle (u,v)+path is genuinely broken -- and reports that cycle if y_uv + cost < 1 (its
-    hitting-set constraint is violated). Because each per-edge minimum is exact, a pass that finds
-    nothing PROVES no broken cycle is violated, so the cutting-plane LP then equals the TRUE optimum over
-    all broken cycles (the tightest lower bound) -- unlike the naive shortest-detour oracle (_violated_cuts).
+    so the cycle (u,v)+path is genuinely broken -- and reports that cycle if its hitting-set constraint
+    is violated. Because each per-edge minimum is exact, a pass that finds nothing PROVES no broken cycle
+    is violated, so the cutting-plane LP then equals the TRUE optimum over all broken cycles (the tightest
+    lower bound) -- unlike the naive shortest-detour oracle (_violated_cuts).
+
+    iomr=False (general MR): the cycle is violated iff y_uv + cost < 1 and the cut is {(u,v)} + path.
+    iomr=True (increase-only): (u,v) is the cycle's unique maximum (its weight exceeds the whole path),
+    so the cut OMITS it and the cycle is violated iff cost < 1 (the path's y-mass alone must reach 1).
+    Iterating (u,v) over ALL edges enumerates every broken cycle exactly once by its unique heavy edge,
+    so this stays sound AND complete for IOMR.
 
     This per-edge minimisation is the weight-constrained shortest path problem (Garey & Johnson ND30),
     weakly NP-hard. The weight-budget DP below is pseudo-polynomial in the max edge weight w_max -- which
@@ -792,9 +824,10 @@ def _rsp_separation(G, yvec, D, tol=1e-6, max_cuts=None):
         col = cost[0:bcap + 1, s, t]
         bstar = int(np.argmin(col))
         best = col[bstar]
-        if not np.isfinite(best) or yuv + best >= 1.0 - tol:
+        slack = best if iomr else yuv + best            # IOMR omits the heavy edge (u,v) from the sum
+        if not np.isfinite(best) or slack >= 1.0 - tol:
             continue
-        cols = {D[(u, v)]}
+        cols = set() if iomr else {D[(u, v)]}
         node, bb = t, bstar
         while node != s and bb > 0:
             lbl = verts[node]
@@ -823,8 +856,8 @@ def _rsp_separation(G, yvec, D, tol=1e-6, max_cuts=None):
 
 
 def metric_repair_lp_separation(G, max_rounds=200, tol=1e-6, solver="highs-ds", oracle="rsp",
-                                verbose=False):
-    """Cutting-plane LP lower bound on the minimum general-MR cover, via a separation oracle.
+                                iomr=False, verbose=False):
+    """Cutting-plane LP lower bound on the minimum metric-repair cover, via a separation oracle.
 
     Solves  min 1.y  s.t. (added broken-cycle constraints) y >= 1, 0 <= y <= 1, adding only violated
     cycles until the oracle finds none. Returns (lp_value, y, D, n_cuts). `lp_value` is a valid LOWER
@@ -832,6 +865,9 @@ def metric_repair_lp_separation(G, max_rounds=200, tol=1e-6, solver="highs-ds", 
     cycles, so it scales to large n. Only the active edges (those in some cut) enter the LP, and the
     default dual-simplex solver returns a vertex -- so when the polytope is integral the returned y is
     integral and `lp_value` IS the exact optimum.
+
+    iomr=False (default) is general MR. iomr=True is increase-only: each cut omits its cycle's maximum
+    edge, so `lp_value` is a lower bound on the exact IOMR cover (see _rsp_separation / _violated_cuts).
 
     oracle:
       "rsp"   (default) -- EXACT weight-constrained shortest path separation (_rsp_separation). The
@@ -847,10 +883,10 @@ def metric_repair_lp_separation(G, max_rounds=200, tol=1e-6, solver="highs-ds", 
     val = 0.0
     use_rsp = (oracle == "rsp")
     for r in range(max_rounds):
-        cuts = _rsp_separation(G, y, D, tol=tol) if use_rsp else None
+        cuts = _rsp_separation(G, y, D, tol=tol, iomr=iomr) if use_rsp else None
         if cuts is None:                                 # non-integer weights -> fall back to naive
             use_rsp = False
-            cuts = _violated_cuts(G, y, D, integral=False, tol=tol)
+            cuts = _violated_cuts(G, y, D, integral=False, tol=tol, iomr=iomr)
         cuts = [c for c in cuts if c not in seen]
         if not cuts:
             break
@@ -869,8 +905,9 @@ def metric_repair_lp_separation(G, max_rounds=200, tol=1e-6, solver="highs-ds", 
     return val, y, D, len(rows)
 
 
-def exact_metric_repair_ilp_separation(G, max_rounds=500, time_limit=None, tol=1e-6, verbose=False):
-    """EXACT minimum general-MR cover via a cutting-plane ILP with lazily-added broken-cycle constraints.
+def exact_metric_repair_ilp_separation(G, max_rounds=500, time_limit=None, tol=1e-6, iomr=False,
+                                       verbose=False):
+    """EXACT minimum metric-repair cover via a cutting-plane ILP with lazily-added broken-cycle constraints.
 
     Repeats: solve the hitting-set ILP over the current cuts -> cover S; run the (exact, verifier-based)
     separation oracle for broken cycles S misses; add them; re-solve. When the oracle finds none, S hits
@@ -878,9 +915,14 @@ def exact_metric_repair_ilp_separation(G, max_rounds=500, time_limit=None, tol=1
     never enumerates all cycles, so memory stays small -- but minimum hitting set is NP-hard, so worst
     case is exponential time. Bound it with max_rounds and/or time_limit (seconds per ILP solve).
 
+    iomr=False (default) is general MR; validate with verifier(G, cover). iomr=True is the exact
+    INCREASE-ONLY optimum -- each cut omits its cycle's maximum edge AND cover edges are no longer exempt
+    from separation (a heavy cover edge still needs a light-edge hit); validate with iomr_verifier(G,
+    cover). Convergence for IOMR means iomr_verifier(G, cover) == 1.
+
     Returns (cover, info). If info['converged'] is True the cover is the proven exact optimum; if False
     (budget hit) the ILP objective is still a valid LOWER BOUND on the optimum, but the returned cover
-    may not be valid -- check with verifier(G, cover)."""
+    may not be valid -- check with the matching verifier."""
     D = make_index_encoding(G)
     m = G.number_of_edges()
     inv = {i: e for e, i in D.items()}
@@ -890,7 +932,7 @@ def exact_metric_repair_ilp_separation(G, max_rounds=500, time_limit=None, tol=1
     converged = False
     r = 0
     for r in range(max_rounds):
-        cuts = [c for c in _violated_cuts(G, sol, D, integral=True, tol=tol) if c not in seen]
+        cuts = [c for c in _violated_cuts(G, sol, D, integral=True, tol=tol, iomr=iomr) if c not in seen]
         if not cuts:
             converged = True
             break

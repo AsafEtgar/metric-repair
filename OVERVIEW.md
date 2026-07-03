@@ -47,6 +47,7 @@ Three variants: **GMR** (general — increase or decrease), **IOMR** (increase-o
 |---|---|---|---|---|---|
 | `domr_alg(G)` | **DOMR** | **exact** | general | no | edges with `w > dist`; decreasing them is optimal DOMR. Also a valid GMR cover. |
 | `exact_metric_repair_ilp(G)` | **GMR** | **exact** | general | no | min hitting set of broken cycles (ILP, §3). Exact ceiling ≈ n=100 sparse (§5). |
+| `exact_metric_repair_ilp(G, iomr=True)` | **IOMR** | **exact** | general | no | same ILP but each cycle's row **drops its max-weight edge**, forcing a hit on a light edge — the exact increase-only optimum. Validate with `iomr_verifier`. |
 | `shortest_path_cover(G, general=True)` | **GMR** | heuristic | general | no | greedy L(+1)-approx; covers each broken edge + one shortest detour. |
 | `shortest_path_cover(G, general=False)` | **IOMR** | heuristic | general | no | same, but covers only the detour edges (not the broken edge itself). |
 | `pivot_heuristic(G)` → `MVD_Pivot(K)` | **GMR** | heuristic | **complete-only core** | yes | "min disagreement" pivot; seeded-reproducible. |
@@ -74,6 +75,7 @@ pivot cores effectively work with triangle constraints.
 | **L1 weight-correction** (`_l1_solve`, `l1_minimization`) | LP (`linprog`, `highs-ipm`) | polygon ineqs on `w+x` over chordless cycles of the completion (`induced_cycle_matrix`) | `x ≥ 0` (default) or free-sign `x=x⁺−x⁻` (`general=True`) | on `complete(G)` | support = cover; `l1_rounding_heuristic` |
 | **Broken-cycle covering** (inside `broken_cycle_rounding_heuristic`) | LP relaxation (`linprog`, `highs`) | `B y ≥ 1`, `0 ≤ y ≤ 1` over broken cycles (`broken_cycle_incidence`) | `y` per edge | on `G` | randomized rounding + greedy top-up |
 | **Exact hitting set** (`exact_metric_repair_ilp`) | ILP (`scipy.optimize.milp`) | `B y ≥ 1`, `y ∈ {0,1}` over broken cycles | `y` per edge | on `G` | — (exact) |
+| **Exact IOMR hitting set** (`…ilp(iomr=True)`) | ILP | `B' y ≥ 1` where each cycle's row `B'` **omits its max edge** | `y` per edge | on `G` | — (exact increase-only) |
 
 Constraint-matrix builders: `induced_cycle_matrix` (chordless-cycle polygon rows, for L1),
 `broken_cycle_incidence` (broken-cycle hitting-set rows, for the ILP/covering LP),
@@ -145,6 +147,23 @@ Measured (geometric, integer weights), all **EXACT (integral LP, valid cover, pr
 The hitting-set LP was **integral at every scale** — so the polynomial RSP-LP yields the exact optimum,
 no integer solve needed. (The separation ILP also works and now solves n=500/p=0.2 in 16 s; it's the
 fallback if integrality ever breaks.) **n=1000 is reached, well inside a 2-day budget.**
+
+**IOMR variant (`iomr=True` on all three of `exact_metric_repair_ilp`, `metric_repair_lp_separation`,
+`exact_metric_repair_ilp_separation`).** Increase-only repair cannot fix a broken cycle at its heavy
+edge (raising it makes `2·max > total` worse), so each cycle must be hit at a **light** edge. The
+constraint drops the cycle's (unique) max edge: `sum_{e in C, e≠max(C)} y_e ≥ 1`. In the oracles the max
+edge is always the undercut edge `(u,v)` (its weight exceeds the whole detour), so the cut simply omits
+`(u,v)`; the RSP violation test becomes `cost < 1` (not `y_uv+cost < 1`). One extra change is needed for
+the **integral** oracle to stay *complete*: cover edges are **no longer exempt** from separation — a heavy
+edge that sits in the cover still leaves its cycle un-hit for IOMR, exactly what `iomr_verifier` checks.
+Verified exact against brute force on all tiny instances; both the enumeration ILP and the separation ILP
+match, every cover passes `iomr_verifier`, and IOMR ≈ 2× the GMR cover (increase-only is a restriction).
+
+⚠ **Unlike GMR, the IOMR LP has a genuine integrality gap** — "hit a light edge" is a general set-cover
+constraint (odd-cycle ½-½-½ fractional solutions), so `metric_repair_lp_separation(iomr=True)` is only a
+valid **lower bound** (gap seen up to ~5.6 at n=40/p=0.4). The **exact IOMR baseline therefore needs the
+separation ILP** (`exact_metric_repair_ilp_separation(iomr=True)`), not the LP. Registry rows
+`exact_general` / `exact_iomr` in `run_experiments.py` produce these ground-truth covers.
 
 **Remaining / "go from there":** (a) swap scipy `milp` for **Gurobi** *only if* a future instance has an
 integrality gap (so far none); (b) rounding schemes (below) for an upper-bound cover in that case; (c)

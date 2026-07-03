@@ -35,7 +35,7 @@ from graph_models import (
 )
 from metric_repair import (
     complete, domr_alg, pivot_heuristic, left_edge_heuristic, shortest_path_cover,
-    l1_min_heuristic, verifier, iomr_verifier,
+    l1_min_heuristic, verifier, iomr_verifier, exact_metric_repair_ilp_separation,
 )
 
 GENERATORS = {
@@ -58,6 +58,11 @@ ALGORITHMS = [
     ("spc_iomr",    "on_G",     "iomr",    lambda CC, comCC: shortest_path_cover(CC, general=False)),
     ("spc_iomr",    "complete", "iomr",    lambda CC, comCC: shortest_path_cover(comCC, general=False)),
     ("l1",          "on_G",     "general", lambda CC, comCC: l1_min_heuristic(CC)),
+    # Exact ground-truth baselines (cutting-plane ILP; scales past enumeration -- see OVERVIEW.md sec 6).
+    # These are the SLOW rows: comment them out for pure-heuristic timing runs. Each returns (cover,info),
+    # so we take [0]. exact_iomr forces a hit on a light edge of every broken cycle (increase-only).
+    ("exact_general", "on_G",   "general", lambda CC, comCC: exact_metric_repair_ilp_separation(CC)[0]),
+    ("exact_iomr",    "on_G",   "iomr",    lambda CC, comCC: exact_metric_repair_ilp_separation(CC, iomr=True)[0]),
 ]
 
 
