@@ -962,3 +962,66 @@ def exact_metric_repair_ilp_separation(G, max_rounds=500, time_limit=None, tol=1
         if verbose:
             print(f"[ilp-sep] round {r}: {len(rows)} cuts, {len(active)} vars, |S|={len(S)}")
     return S, {"rounds": r + 1, "constraints": len(rows), "converged": converged, "size": len(S)}
+
+
+def _positive_integer_weights(G):
+    """True iff every edge weight is a positive integer (the regime where the RSP oracle actually runs
+    and the covering LP is separated over ALL broken cycles)."""
+    for _, _, w in sorted_edges(G, weight=True):
+        if w < 1 or float(w) != int(w):
+            return False
+    return True
+
+
+def threshold_rounding_cover(G, oracle="rsp", iomr=False, tol=1e-6, verbose=False):
+    """Deterministic 1/L threshold rounding of the separation-LP solution into a valid cover.
+
+    Solve the covering LP with metric_repair_lp_separation (fractional optimum y*), then round UP every
+    edge with y*_e >= 1/f, where f is the max number of edges in any constraint row: f = L (the
+    broken-cycle length bound) for general MR, f = L-1 for IOMR (whose rows drop each cycle's max edge).
+    Every broken cycle has <= f constrained edges and sum_{e in row} y*_e >= 1, so some edge per row
+    clears 1/f; the rounded set therefore hits every cycle, with
+
+        |S| <= f * (LP optimum) <= f * OPT      -- a deterministic f-approximation (L, or L-1 for IOMR).
+
+    The ratio needs y* feasible for ALL broken cycles, which holds only under the EXACT oracle
+    ("rsp", and only for positive integer weights -- otherwise metric_repair_lp_separation falls back to
+    naive internally). With oracle="naive" the LP is separated on canonical cycles only, so y* may
+    violate a non-canonical broken cycle and the threshold set can miss it; a verifier-based greedy
+    top-up then restores validity. The returned cover is ALWAYS valid (checked by the integral oracle);
+    info['guaranteed'] says whether the f-approximation bound provably holds for this run.
+
+    Returns (cover, info) with info: lp_value, f, threshold, rounded (size before top-up), added (edges
+    the top-up appended), size, guaranteed.
+    """
+    L = broken_cycle_length_bound(G)
+    lp_value, y, D, _ = metric_repair_lp_separation(
+        G, oracle=oracle, iomr=iomr, tol=tol, verbose=verbose)
+    inv = {i: e for e, i in D.items()}
+    if L is not None:
+        f = max(1, L - 1) if iomr else max(1, L)
+        thr = 1.0 / f
+    else:                                               # no length bound (non-positive weights): no ratio
+        f, thr = None, 0.5
+    S = {inv[i] for i in np.nonzero(y >= thr - tol)[0]}  # round UP every edge clearing the threshold
+    rounded = len(S)
+    # Feasibility top-up: a no-op under the exact oracle (the threshold set already hits every cycle),
+    # but repairs the canonical-only naive separation. Each round adds the highest-y edge of a missed cut.
+    added = 0
+    for _ in range(G.number_of_edges() + 1):
+        sol = np.zeros(len(D))
+        for e in S:
+            sol[D[e]] = 1.0
+        cuts = _violated_cuts(G, sol, D, integral=True, tol=tol, iomr=iomr)
+        if not cuts:
+            break
+        for cut in cuts:
+            S.add(inv[max(cut, key=lambda c: y[c])])    # add the most-fractional edge of the missed cycle
+            added += 1
+    guaranteed = (oracle == "rsp" and _positive_integer_weights(G) and L is not None and added == 0)
+    info = {"lp_value": float(lp_value), "f": f, "threshold": thr, "rounded": rounded,
+            "added": added, "size": len(S), "guaranteed": guaranteed}
+    if verbose:
+        print(f"[thr-round] f={f} lp={lp_value:.3f} rounded={rounded} added={added} "
+              f"size={len(S)} guaranteed={guaranteed}")
+    return S, info

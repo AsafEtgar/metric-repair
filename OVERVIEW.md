@@ -54,6 +54,7 @@ IOMR variant** (the IOMR one hits each broken cycle at a *light* edge — see th
 | `exact_metric_repair_ilp_separation(G, iomr=False/True)` | **GMR** / **IOMR** | **exact** (on convergence) | general | no | cutting-plane ILP, never enumerates cycles — scales to n≈1000 (§6). Validate with `verifier` / `iomr_verifier`. |
 | `shortest_path_cover(G, general=True/False)` | **GMR** / **IOMR** | **approx** (L+1) | general | no | greedy: covers one shortest detour of each broken edge (`general=True` also covers the broken edge → GMR; `general=False` covers only the detour → IOMR). L(+1)-approx. |
 | `broken_cycle_rounding_heuristic(G, iomr=False/True)` | **GMR** / **IOMR** | **approx** (LP rounding) | general | no | randomized rounding of the covering LP (§3), `scale=ln(#cycles)` → O(log·OPT) in expectation; `iomr=True` drops each cycle's max edge. Shares the exact ILP's enumeration ceiling. |
+| `threshold_rounding_cover(G, iomr=…, oracle="rsp"/"naive")` | **GMR** / **IOMR** | **approx** (f = L, or L−1) | general | no | round up every `y*_e ≥ 1/f` from the **separation** LP (§6) — deterministic `f`-approximation under the exact (`rsp`) oracle; scales to large n (no enumeration). `naive` oracle → still valid (verifier top-up) but no ratio. |
 | `pivot_heuristic(G)` → `MVD_Pivot(K)` | **GMR** | heuristic | **complete-only core** | yes | "min disagreement" pivot; seeded-reproducible. |
 | `left_edge_heuristic(G)` → `Gilbert_Jain_IOMR(K)` | **IOMR** | heuristic | **complete-only core** | yes | Gilbert–Jain: fix the 'left' edge of each broken triangle. |
 | `l1_min_heuristic(G, general=False/True)` → `l1_minimization(Kc)` | **IOMR** (default) / **GMR** | heuristic | **complete-only core** | yes | support of the L1 weight-correction LP (§3); `general=False` → `x ≥ 0` increase-only (IOMR), `general=True` → free-sign (GMR). |
@@ -190,18 +191,21 @@ the RSP DP memory is `O(w_max · n²)` — fine for small `w_max`, watch it for 
      over *all* broken cycles → **done, exactly**.
 4. Repeat. Because only binding cycles are ever added, the constraint set stays small.
 
-**Approximation / rounding schemes.** This must be *specific* — named schemes with stated guarantees,
-not just "round the LP". Exact menu TBD with the user; candidate building blocks:
-- Randomized rounding: sample edge `e` w.p. `min(1, scale·y_e)`, union over rounds, with the separation
-  oracle as the validity check and a greedy top-up for any still-violated cycle (reuse the
-  `broken_cycle_rounding_heuristic` machinery, but against the dynamic constraint set).
-- Deterministic `f`-approximation for hitting set (round up every `y_e ≥ 1/f`, where `f` = max cycle
-  length = the broken-cycle length bound `L`) — gives a provable `L`-factor cover.
-- Primal–dual / region-growing on the cycle structure as an alternative with its own ratio.
-- Threshold / iterated rounding as a deterministic baseline; reweighted-L1 re-solving to sparsify first.
+**Rounding the separation LP into a cover.**
 
-⚠ **Spec the approximation guarantees explicitly before coding** — the user wants particular schemes
-with particular ratios, not a generic rounding pass.
+- **Deterministic `f`-threshold rounding — IMPLEMENTED (`threshold_rounding_cover`).** Round UP every
+  edge with `y*_e ≥ 1/f`, where `f = L` (the broken-cycle length bound) for GMR and `f = L−1` for IOMR
+  (its rows drop each cycle's max edge). Since every broken cycle has `≤ f` constrained edges and
+  `Σ_{e∈row} y*_e ≥ 1`, some edge per row clears `1/f`, so the rounded set hits every cycle:
+  `|S| ≤ f·LP ≤ f·OPT` — a **provable `f`-approximation** (`L`, or `L−1` for IOMR; `= w_max` for integer
+  weights). The bound needs `y*` feasible for *all* cycles, i.e. the **exact `rsp` oracle** (integer
+  weights); with `oracle="naive"` the cover stays valid via a `verifier`-driven top-up but the ratio is
+  forfeited (`info['guaranteed']` reports which). Measured (geometric): under `rsp`, GMR rounds to the
+  **exact** cover (ratio 1.00 — the GMR LP is integral) and IOMR to ratio **1.0–1.22**, well inside the
+  worst-case `f`; under `naive`, valid but ratio up to ~2.8.
+- Randomized rounding (O(log·OPT); genuine O(log n) only for bounded `w_max`) — *not yet wired to the
+  separation LP*; `broken_cycle_rounding_heuristic` implements it over the enumerated matrix instead.
+- Still open: primal–dual / region-growing with its own ratio; reweighted-L1 re-solving to sparsify.
 
 **Reuse.** The `verifier` already implements a separation oracle for *integral* covers (it finds an
 undercut edge + detour = a violated broken cycle); generalising it to score a *fractional* `y` is the
