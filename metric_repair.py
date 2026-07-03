@@ -539,24 +539,29 @@ def l1_rounding_heuristic(G, rounds=20, scale=1.0, seed=None, solver="highs-ipm"
     we may change), and a cover is the same object whether an edge is to be increased or decreased. We
     therefore sample on the magnitude |x_e| (the LP's fractional evidence that edge e matters), and the
     general verifier already lets a chosen cover edge move either way -- so once general=True only swaps
-    the LP for the free-sign one, no other rounding logic changes."""
+    the LP for the free-sign one, no other rounding logic changes.
+
+    The acceptance check MATCHES the variant: general=True keeps sampled sets the general verifier accepts;
+    general=False keeps only sets iomr_verifier accepts, so the result is a genuine increase-only cover
+    (the increase-oriented x >= 0 LP already targets IOMR)."""
     Gc = complete(G)
     x, D = _l1_solve(Gc, induced_cycle_matrix, solver=solver, general=general)
+    check = verifier if general else iomr_verifier       # validate against the matching MR variant
     support = [e for e in sorted_edges(G) if abs(x[D[e]]) > 1e-7]
     if not support:
         return set()
     xmax = max(abs(x[D[e]]) for e in support)
     p = {e: min(1.0, scale * abs(x[D[e]]) / xmax) for e in support}
     rng = np.random.default_rng(seed)
-    best = set(support)                                  # full support: the deterministic, valid cover
+    best = set(support)                                  # full support: the deterministic fallback cover
     for _ in range(rounds):
         S = {e for e in support if rng.random() < p[e]}
-        if S and len(S) < len(best) and verifier(G, S):
+        if S and len(S) < len(best) and check(G, S):
             best = S
     return best
 
 
-def broken_cycle_rounding_heuristic(G, max_len=None, rounds=20, scale=None, seed=None):
+def broken_cycle_rounding_heuristic(G, max_len=None, rounds=20, scale=None, seed=None, iomr=False):
     """Randomized rounding of the covering LP over ALL broken cycles of G into a valid cover.
 
     Solve the LP relaxation of the hitting set  min 1.y  s.t. B y >= 1, 0 <= y <= 1, then over several
@@ -564,8 +569,14 @@ def broken_cycle_rounding_heuristic(G, max_len=None, rounds=20, scale=None, seed
     broken cycle is hit; any cycle still un-hit after the rounds is covered greedily, so the returned
     set is always a valid cover over the enumerated cycles. With max_len=None that enumeration is
     complete (auto-capped at broken_cycle_length_bound(G)), so the cover is valid for G as a whole.
-    scale defaults to ~ln(#cycles), the standard set-cover rounding factor."""
-    B, n_cyc, D = broken_cycle_incidence(G, max_len)
+    scale defaults to ~ln(#cycles), the standard set-cover rounding factor -- so with scale=ln(#cycles)
+    the rounding is the classic O(log)-approximation of the covering LP (the greedy top-up only makes the
+    returned set no larger and still valid).
+
+    iomr=False (default) is general MR. iomr=True is increase-only: each cycle's row omits its maximum
+    edge (drop_max), so every sampled/greedy hit lands on a LIGHT edge -- a valid IOMR cover over the
+    enumerated cycles (validate with iomr_verifier)."""
+    B, n_cyc, D = broken_cycle_incidence(G, max_len, drop_max=iomr)
     if n_cyc == 0:
         return set()
     m = B.shape[1]

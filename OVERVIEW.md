@@ -43,28 +43,37 @@ Three variants: **GMR** (general — increase or decrease), **IOMR** (increase-o
 **DOMR** (decrease-only). Feasibility predicates: `verifier(G,S)` (GMR) and `iomr_verifier(G,S)`
 (IOMR, strictly stronger). Both are cheap (one shortest-path pass, no cycle enumeration).
 
-| algorithm | variant | exact? | input | needs completion? | notes |
+**Guarantee** column: **exact** = provably minimum cover · **approx** = worst-case ratio proven ·
+**heuristic** = valid cover, no size guarantee. **Every LP/l1-based method now has both a GMR and an
+IOMR variant** (the IOMR one hits each broken cycle at a *light* edge — see the flags below).
+
+| algorithm | variant | guarantee | input | needs completion? | notes |
 |---|---|---|---|---|---|
 | `domr_alg(G)` | **DOMR** | **exact** | general | no | edges with `w > dist`; decreasing them is optimal DOMR. Also a valid GMR cover. |
-| `exact_metric_repair_ilp(G)` | **GMR** | **exact** | general | no | min hitting set of broken cycles (ILP, §3). Exact ceiling ≈ n=100 sparse (§5). |
-| `exact_metric_repair_ilp(G, iomr=True)` | **IOMR** | **exact** | general | no | same ILP but each cycle's row **drops its max-weight edge**, forcing a hit on a light edge — the exact increase-only optimum. Validate with `iomr_verifier`. |
-| `shortest_path_cover(G, general=True)` | **GMR** | heuristic | general | no | greedy L(+1)-approx; covers each broken edge + one shortest detour. |
-| `shortest_path_cover(G, general=False)` | **IOMR** | heuristic | general | no | same, but covers only the detour edges (not the broken edge itself). |
+| `exact_metric_repair_ilp(G, iomr=False/True)` | **GMR** / **IOMR** | **exact** | general | no | min hitting set of broken cycles (ILP, §3); `iomr=True` drops each cycle's max edge → light-edge hit. Enumeration ceiling ≈ n=100 sparse (§5). |
+| `exact_metric_repair_ilp_separation(G, iomr=False/True)` | **GMR** / **IOMR** | **exact** (on convergence) | general | no | cutting-plane ILP, never enumerates cycles — scales to n≈1000 (§6). Validate with `verifier` / `iomr_verifier`. |
+| `shortest_path_cover(G, general=True/False)` | **GMR** / **IOMR** | **approx** (L+1) | general | no | greedy: covers one shortest detour of each broken edge (`general=True` also covers the broken edge → GMR; `general=False` covers only the detour → IOMR). L(+1)-approx. |
+| `broken_cycle_rounding_heuristic(G, iomr=False/True)` | **GMR** / **IOMR** | **approx** (LP rounding) | general | no | randomized rounding of the covering LP (§3), `scale=ln(#cycles)` → O(log·OPT) in expectation; `iomr=True` drops each cycle's max edge. Shares the exact ILP's enumeration ceiling. |
 | `pivot_heuristic(G)` → `MVD_Pivot(K)` | **GMR** | heuristic | **complete-only core** | yes | "min disagreement" pivot; seeded-reproducible. |
 | `left_edge_heuristic(G)` → `Gilbert_Jain_IOMR(K)` | **IOMR** | heuristic | **complete-only core** | yes | Gilbert–Jain: fix the 'left' edge of each broken triangle. |
-| `l1_min_heuristic(G, general=…)` → `l1_minimization(Kc)` | IOMR-oriented (default) or **GMR** (`general=True`) | heuristic | **complete-only core** | yes | L1 LP support (§3). |
-| `l1_rounding_heuristic(G, general=…)` | **GMR** | heuristic | general (+completion for LP) | yes (LP step) | randomized rounding of the L1 LP. |
-| `broken_cycle_rounding_heuristic(G)` | **GMR** | heuristic | general | no | randomized rounding of the broken-cycle covering LP (§3). |
+| `l1_min_heuristic(G, general=False/True)` → `l1_minimization(Kc)` | **IOMR** (default) / **GMR** | heuristic | **complete-only core** | yes | support of the L1 weight-correction LP (§3); `general=False` → `x ≥ 0` increase-only (IOMR), `general=True` → free-sign (GMR). |
+| `l1_rounding_heuristic(G, general=False/True)` | **IOMR** (default) / **GMR** | heuristic | general (+completion for LP) | yes (LP step) | randomized rounding of the L1 LP; the acceptance check matches the variant (`iomr_verifier` when `general=False`, else `verifier`). |
+| `metric_repair_lp_separation(G, iomr=False/True)` | **GMR** / **IOMR** | **bound** (not a cover) | general | no | cutting-plane covering LP (§6): returns a value + fractional `y`, *not* a cover. Exact optimum for GMR (LP integral); a valid **lower bound** for IOMR (LP has a gap). |
 
 **L1: two modes.** `general=False` (default) keeps the increase-oriented LP (`x ≥ 0` → weights only
-increase; matches the Sage equivalence reference). `general=True` is true general MR: free-sign
-corrections `x = x⁺ − x⁻`, minimise `Σ(x⁺+x⁻)`, weights may decrease (bounded so `w+x ≥ 0`). Rounding is
-**sign-agnostic** — the cover is "which edges may change", so `l1_rounding_heuristic` samples on `|x_e|`
-and the general `verifier` lets each chosen edge move either way; flipping `general` only swaps the LP.
+increase — the IOMR variant; matches the Sage equivalence reference). `general=True` is true general MR:
+free-sign corrections `x = x⁺ − x⁻`, minimise `Σ(x⁺+x⁻)`, weights may decrease (bounded so `w+x ≥ 0`).
+Rounding is **sign-agnostic** — the cover is "which edges may change", so `l1_rounding_heuristic` samples
+on `|x_e|`; flipping `general` swaps the LP *and* the validity check (`iomr_verifier` vs `verifier`), so
+the increase-only mode returns a genuine IOMR cover.
 
 `complete(G)` adds every missing edge `xy` with weight `dist_G(x,y)` (the metric completion; assumes
 `G` connected). On a complete graph the only chordless cycles are triangles, so the L1 / left-edge /
 pivot cores effectively work with triangle constraints.
+
+*Not a repair algorithm:* `truly_light_heuristic` / `get_truly_light_edges` (`metric_extras.py`) are a
+preprocessing / complexity tool — they discard provably-light edges and report the residual cycle
+dimension; they return no cover, so they are intentionally absent from the table above.
 
 ---
 
@@ -73,7 +82,7 @@ pivot cores effectively work with triangle constraints.
 | name | type | constraints | variables | where | rounding |
 |---|---|---|---|---|---|
 | **L1 weight-correction** (`_l1_solve`, `l1_minimization`) | LP (`linprog`, `highs-ipm`) | polygon ineqs on `w+x` over chordless cycles of the completion (`induced_cycle_matrix`) | `x ≥ 0` (default) or free-sign `x=x⁺−x⁻` (`general=True`) | on `complete(G)` | support = cover; `l1_rounding_heuristic` |
-| **Broken-cycle covering** (inside `broken_cycle_rounding_heuristic`) | LP relaxation (`linprog`, `highs`) | `B y ≥ 1`, `0 ≤ y ≤ 1` over broken cycles (`broken_cycle_incidence`) | `y` per edge | on `G` | randomized rounding + greedy top-up |
+| **Broken-cycle covering** (inside `broken_cycle_rounding_heuristic`) | LP relaxation (`linprog`, `highs`) | `B y ≥ 1`, `0 ≤ y ≤ 1` over broken cycles (`broken_cycle_incidence`, `drop_max=iomr`) | `y` per edge | on `G` | randomized rounding + greedy top-up (GMR or IOMR) |
 | **Exact hitting set** (`exact_metric_repair_ilp`) | ILP (`scipy.optimize.milp`) | `B y ≥ 1`, `y ∈ {0,1}` over broken cycles | `y` per edge | on `G` | — (exact) |
 | **Exact IOMR hitting set** (`…ilp(iomr=True)`) | ILP | `B' y ≥ 1` where each cycle's row `B'` **omits its max edge** | `y` per edge | on `G` | — (exact increase-only) |
 
