@@ -561,6 +561,90 @@ def l1_rounding_heuristic(G, rounds=20, scale=1.0, seed=None, solver="highs-ipm"
     return best
 
 
+def _l1_separation_phi(rows, m):
+    """Build the polygon-inequality matrix phi (n_rows x m) from cutting-plane rows. Each row is
+    (heavy_col, light_cols): -1 on the heavy (distinguished) edge, +1 on each light edge, so
+    phi @ (w+x) >= 0 encodes w'_heavy <= sum_light w' -- the same sign convention as induced_cycle_matrix."""
+    data, ri, ci = [], [], []
+    for r, (hcol, lcols) in enumerate(rows):
+        ri.append(r); ci.append(hcol); data.append(-1.0)
+        for c in lcols:
+            ri.append(r); ci.append(c); data.append(1.0)
+    return sparse.csr_matrix((data, (ri, ci)), shape=(len(rows), m))
+
+
+def l1_separation(G, general=False, complete_graph=False, solver="highs-ipm", reweight=0,
+                  max_rounds=200, tol=1e-6, verbose=False):
+    """L1 weight-correction repair via CUTTING PLANES -- no chordless-cycle enumeration.
+
+    The enumerated L1 (l1_minimization) materialises every polygon inequality of the completion up front
+    (induced_cycle_matrix). This generates them on demand instead: solve the L1 LP over the current rows,
+    form w' = w + x, run one all-pairs-shortest-path pass, and for every edge (u,v) whose shortest
+    w'-detour undercuts it add that cycle's polygon inequality; stop when w' has no broken cycle. Minimises
+    sum|x_e| (general=True, GMR) or sum x_e with x >= 0 (general=False, increase-only/IOMR), and returns
+    the support restricted to E(G) -- the cover.
+
+    complete_graph=False (default) runs directly on G: no metric completion. On convergence w' has no
+    broken cycle, and because x >= 0 forces some LIGHT edge of every broken cycle up (general=False) /
+    some edge of every broken cycle to move (general=True), the support is a PROVABLY VALID cover of G
+    (iomr_verifier / verifier accept it) -- no restrict-to-E(G) gamble. complete_graph=True reproduces the
+    completion-based l1_minimization semantics via cutting planes (same optimum, no enumeration), but then
+    inherits the restrict-to-E(G) heuristic step. Still a HEURISTIC overall (L1 is a surrogate for the
+    sparsest cover); reweight>0 adds reweighted-L1 passes. On convergence the returned cover is valid; if
+    max_rounds is hit first it may not be (check with the matching verifier)."""
+    H = complete(G) if complete_graph else G
+    D = make_index_encoding(H)
+    m = H.number_of_edges()
+    w = get_weights_vector(H, D)
+    verts = sorted(H.nodes())
+    idx = {v: i for i, v in enumerate(verts)}
+    n = len(verts)
+    G_edges = set(sorted_edges(G))
+    rows, seen = [], set()
+    x = np.zeros(m)
+    for r in range(max_rounds):
+        wprime = w + x
+        A = np.zeros((n, n))
+        for (u, v) in sorted_edges(H):                       # adjacency in the CURRENT weights w'
+            a, b = idx[u], idx[v]
+            A[a, b] = A[b, a] = wprime[D[(u, v)]]
+        dist, pred = shortest_path(A, method="FW", directed=False, return_predecessors=True)
+        new_rows = []
+        for (u, v) in sorted_edges(H):
+            a, b = idx[u], idx[v]
+            if dist[a, b] < wprime[D[(u, v)]] - tol:         # (u,v) undercut by a w'-detour -> add polygon
+                P = find_shortest_path(a, b, pred[a])
+                lcols = frozenset(D[_norm(verts[i], verts[j])] for (i, j) in P)
+                key = (D[(u, v)], lcols)
+                if not lcols or key in seen:
+                    continue
+                seen.add(key)
+                new_rows.append((D[(u, v)], lcols))
+        if not new_rows:                                     # w' metric -> optimal, done
+            break
+        rows.extend(new_rows)
+        phi = _l1_separation_phi(rows, m)
+        b_ub = phi @ w
+        if not general:                                      # x >= 0: increase-only (IOMR)
+            c = np.ones(m)
+            for _ in range(reweight + 1):
+                x = linprog(c, A_ub=-phi, b_ub=b_ub, bounds=(0, None), method=solver).x
+                c = 1.0 / (np.abs(x) + 1e-3)
+        else:                                                # free-sign x = p - n: general MR
+            Aub = sparse.hstack([-phi, phi]).tocsr()
+            bounds = [(0, None)] * m + [(0, float(wi)) for wi in w]
+            rw = np.ones(m)
+            for _ in range(reweight + 1):
+                z = linprog(np.concatenate([rw, rw]), A_ub=Aub, b_ub=b_ub, bounds=bounds,
+                            method=solver).x
+                x = z[:m] - z[m:]
+                rw = 1.0 / (np.abs(x) + 1e-3)
+        if verbose:
+            print(f"[l1-sep] round {r}: {len(rows)} polygon rows, "
+                  f"|support|={int((np.abs(x) > 1e-7).sum())}")
+    return {e for e in sorted_edges(H) if e in G_edges and abs(x[D[e]]) > 1e-7}
+
+
 def broken_cycle_rounding_heuristic(G, max_len=None, rounds=20, scale=None, seed=None, iomr=False):
     """Randomized rounding of the covering LP over ALL broken cycles of G into a valid cover.
 
@@ -575,32 +659,11 @@ def broken_cycle_rounding_heuristic(G, max_len=None, rounds=20, scale=None, seed
 
     iomr=False (default) is general MR. iomr=True is increase-only: each cycle's row omits its maximum
     edge (drop_max), so every sampled/greedy hit lands on a LIGHT edge -- a valid IOMR cover over the
-    enumerated cycles (validate with iomr_verifier)."""
-    B, n_cyc, D = broken_cycle_incidence(G, max_len, drop_max=iomr)
-    if n_cyc == 0:
-        return set()
-    m = B.shape[1]
-    y = linprog(np.ones(m), A_ub=-B, b_ub=-np.ones(n_cyc), bounds=(0, 1), method="highs").x
-    if scale is None:
-        scale = max(1.0, float(np.log(n_cyc + 1)))
-    p = np.minimum(1.0, scale * y)
-    rng = np.random.default_rng(seed)
-    Bcsr = B.tocsr()
-    chosen = set()
+    enumerated cycles (validate with iomr_verifier). (Thin wrapper: the enum+randomized corner of
+    covering_lp_cover.)"""
+    return covering_lp_cover(G, solve="enum", rounding="randomized", iomr=iomr, max_len=max_len,
+                             rounds=rounds, scale=scale, seed=seed)[0]
 
-    def hits():
-        return np.asarray(Bcsr[:, list(chosen)].sum(axis=1)).ravel() if chosen else np.zeros(n_cyc)
-
-    for _ in range(rounds):
-        chosen.update(np.nonzero(rng.random(m) < p)[0].tolist())
-        if (hits() >= 1).all():
-            break
-    for c in np.nonzero(hits() < 1)[0]:                  # greedy top-up -> always a valid cover
-        row = Bcsr.getrow(c).indices
-        if not (set(row.tolist()) & chosen):
-            chosen.add(int(row[0]))
-    inv = {i: e for e, i in D.items()}
-    return {inv[i] for i in chosen}
 
 def find_shortest_path(u, v, pred_row):
     """Reconstruct a shortest u->v path as a list of (position) edges from a scipy predecessor row
@@ -992,36 +1055,130 @@ def threshold_rounding_cover(G, oracle="rsp", iomr=False, tol=1e-6, verbose=Fals
     info['guaranteed'] says whether the f-approximation bound provably holds for this run.
 
     Returns (cover, info) with info: lp_value, f, threshold, rounded (size before top-up), added (edges
-    the top-up appended), size, guaranteed.
+    the top-up appended), size, guaranteed. (Thin wrapper: the separation+deterministic corner of
+    covering_lp_cover.)
     """
-    L = broken_cycle_length_bound(G)
-    lp_value, y, D, _ = metric_repair_lp_separation(
-        G, oracle=oracle, iomr=iomr, tol=tol, verbose=verbose)
+    S, info = covering_lp_cover(G, solve="separation", rounding="deterministic", iomr=iomr,
+                                oracle=oracle, tol=tol, verbose=verbose)
+    info["threshold"] = (1.0 / info["f"]) if info["f"] else 0.5
+    return S, info
+
+
+# ----------------------------------------------------------------------------
+# Unified covering-LP cover: the 2x2 of  solve (enum | separation)  x  rounding (randomized | det).
+# broken_cycle_rounding_heuristic and threshold_rounding_cover are two corners of this grid; the engine
+# below implements all four behind one entry point and they now delegate to it.
+# ----------------------------------------------------------------------------
+
+def _covering_lp_fractional(G, solve, iomr, oracle, max_len, tol, lp_solver, verbose):
+    """Solve the covering LP  min 1.y  s.t.  B y >= 1, 0<=y<=1  (broken-cycle hitting set, drop_max=iomr)
+    and return (y, D, check, n_constraints):
+      * y     -- the fractional optimum (length m, indexed by D),
+      * check -- check(sol) -> list of violated cuts (column frozensets) for a candidate 0/1 array sol,
+                 empty iff sol is a valid cover,
+      * n_constraints -- number of constraints known up front (the cycle count for "enum", else None).
+    solve="enum" builds the full length-bounded matrix; "separation" runs metric_repair_lp_separation and
+    uses the exact integral oracle for `check`."""
+    m = G.number_of_edges()
+    if solve == "separation":
+        _, y, D, _ = metric_repair_lp_separation(
+            G, oracle=oracle, iomr=iomr, tol=tol, solver=lp_solver, verbose=verbose)
+
+        def check(sol):
+            return _violated_cuts(G, sol, D, integral=True, tol=tol, iomr=iomr)
+        return y, D, check, None
+    # enumeration
+    B, n_cyc, D = broken_cycle_incidence(G, max_len, drop_max=iomr)
+    if n_cyc == 0:
+        return np.zeros(m), D, (lambda sol: []), 0
+    y = linprog(np.ones(m), A_ub=-B, b_ub=-np.ones(n_cyc), bounds=(0, 1), method=lp_solver).x
+    Bcsr = B.tocsr()
+
+    def check(sol):
+        hit = np.asarray(Bcsr @ np.asarray(sol)).ravel()
+        return [frozenset(Bcsr.getrow(c).indices.tolist()) for c in np.nonzero(hit < 0.5)[0]]
+    return y, D, check, n_cyc
+
+
+def covering_lp_cover(G, solve="separation", rounding="deterministic", iomr=False, oracle="rsp",
+                      max_len=None, rounds=20, scale=None, seed=None, tol=1e-6, solver=None,
+                      verbose=False):
+    """Covering-LP metric-repair cover, exposing the two ORTHOGONAL choices as flags:
+
+        solve    = "enum" | "separation"           -- how  min 1.y s.t. By>=1  is built/solved
+        rounding = "randomized" | "deterministic"  -- how the fractional optimum y is rounded to a cover
+
+    All four combinations are supported. iomr=True hits each broken cycle at a LIGHT edge (drop_max).
+    A shared oracle-driven top-up guarantees the returned cover is always valid. Returns (cover, info).
+
+    solve:
+      "enum"       -- enumerate all (length-bounded) broken cycles, solve once. Exact relaxation but the
+                      enumeration ceiling is ~n=100.
+      "separation" -- cutting planes (metric_repair_lp_separation), no enumeration -> scales to ~n=1000.
+                      oracle="rsp" (exact, integer weights) makes y the true LP optimum over ALL cycles.
+    rounding:
+      "deterministic" -- round up every y_e >= 1/f (f = L, or L-1 for IOMR): a provable f-approximation,
+                      |S| <= f*LP <= f*OPT (needs y feasible for all cycles -- always true for "enum";
+                      for "separation" needs the exact rsp oracle). info['guaranteed'] reports this.
+      "randomized"    -- sample edge e w.p. min(1, scale*y_e), union over `rounds`; O(log*OPT) in
+                      expectation with scale~ln(#constraints). scale defaults to ln(#cycles) for "enum"
+                      and to L*ln(n) (an ln(n^L) bound on #cycles) for "separation".
+
+    info keys: solve, rounding, iomr, lp_value, f, scale, rounded (size before top-up), added (top-up
+    edges), size, guaranteed (True iff the deterministic f-bound provably holds this run)."""
+    lp_solver = solver or ("highs-ds" if solve == "separation" else "highs")
+    y, D, check, ncon = _covering_lp_fractional(G, solve, iomr, oracle, max_len, tol, lp_solver, verbose)
     inv = {i: e for e, i in D.items()}
-    if L is not None:
-        f = max(1, L - 1) if iomr else max(1, L)
-        thr = 1.0 / f
-    else:                                               # no length bound (non-positive weights): no ratio
-        f, thr = None, 0.5
-    S = {inv[i] for i in np.nonzero(y >= thr - tol)[0]}  # round UP every edge clearing the threshold
-    rounded = len(S)
-    # Feasibility top-up: a no-op under the exact oracle (the threshold set already hits every cycle),
-    # but repairs the canonical-only naive separation. Each round adds the highest-y edge of a missed cut.
-    added = 0
-    for _ in range(G.number_of_edges() + 1):
-        sol = np.zeros(len(D))
-        for e in S:
-            sol[D[e]] = 1.0
-        cuts = _violated_cuts(G, sol, D, integral=True, tol=tol, iomr=iomr)
+    m = len(inv)
+    n = G.number_of_nodes()
+    L = broken_cycle_length_bound(G)
+    lp_value = float(np.sum(y))
+    f = (max(1, (L - 1) if iomr else L)) if L is not None else None
+    used_scale = None
+
+    if rounding == "deterministic":
+        thr = (1.0 / f) if f else 0.5
+        cols = set(np.nonzero(y >= thr - tol)[0].tolist())
+    elif rounding == "randomized":
+        if scale is None:
+            base = float(np.log((ncon if ncon else n) + 1)) if solve == "enum" \
+                else (L if L else 1) * float(np.log(n + 1))
+            scale = max(1.0, base)
+        used_scale = scale
+        rng = np.random.default_rng(seed)
+        p = np.minimum(1.0, scale * y)
+        cols, sol = set(), np.zeros(m)
+        for _ in range(rounds):
+            picks = np.nonzero(rng.random(m) < p)[0]
+            cols.update(picks.tolist())
+            sol[picks] = 1.0
+            if not check(sol):
+                break
+    else:
+        raise ValueError(f"rounding must be 'randomized' or 'deterministic', got {rounding!r}")
+    rounded = len(cols)
+
+    added = 0                                            # shared feasibility top-up (valid cover always)
+    for _ in range(m + 1):
+        sol = np.zeros(m)
+        if cols:
+            sol[list(cols)] = 1.0
+        cuts = check(sol)
         if not cuts:
             break
         for cut in cuts:
-            S.add(inv[max(cut, key=lambda c: y[c])])    # add the most-fractional edge of the missed cycle
+            cols.add(max(cut, key=lambda c: y[c]))       # add the most-fractional edge of a missed cut
             added += 1
-    guaranteed = (oracle == "rsp" and _positive_integer_weights(G) and L is not None and added == 0)
-    info = {"lp_value": float(lp_value), "f": f, "threshold": thr, "rounded": rounded,
-            "added": added, "size": len(S), "guaranteed": guaranteed}
+
+    if rounding == "deterministic" and f is not None and added == 0:
+        guaranteed = (solve == "enum") or (oracle == "rsp" and _positive_integer_weights(G))
+    else:
+        guaranteed = False                               # randomized bound is whp/expected, not certified
+    S = {inv[c] for c in cols}
+    info = {"solve": solve, "rounding": rounding, "iomr": iomr, "lp_value": lp_value, "f": f,
+            "scale": used_scale, "rounded": rounded, "added": added, "size": len(S),
+            "guaranteed": guaranteed}
     if verbose:
-        print(f"[thr-round] f={f} lp={lp_value:.3f} rounded={rounded} added={added} "
-              f"size={len(S)} guaranteed={guaranteed}")
+        print(f"[cov-lp] solve={solve} round={rounding} lp={lp_value:.3f} f={f} "
+              f"rounded={rounded} added={added} size={len(S)} guaranteed={guaranteed}")
     return S, info

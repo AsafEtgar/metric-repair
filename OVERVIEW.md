@@ -59,6 +59,8 @@ IOMR variant** (the IOMR one hits each broken cycle at a *light* edge — see th
 | `left_edge_heuristic(G)` → `Gilbert_Jain_IOMR(K)` | **IOMR** | heuristic | **complete-only core** | yes | Gilbert–Jain: fix the 'left' edge of each broken triangle. |
 | `l1_min_heuristic(G, general=False/True)` → `l1_minimization(Kc)` | **IOMR** (default) / **GMR** | heuristic | **complete-only core** | yes | support of the L1 weight-correction LP (§3); `general=False` → `x ≥ 0` increase-only (IOMR), `general=True` → free-sign (GMR). |
 | `l1_rounding_heuristic(G, general=False/True)` | **IOMR** (default) / **GMR** | heuristic | general (+completion for LP) | yes (LP step) | randomized rounding of the L1 LP; the acceptance check matches the variant (`iomr_verifier` when `general=False`, else `verifier`). |
+| `l1_separation(G, general=False/True, complete_graph=False)` | **IOMR** (default) / **GMR** | heuristic | general | **no** | **cutting-plane L1** (§3): generates polygon rows on demand via shortest paths — no chordless-cycle enumeration. Default runs directly on `G` → **provably valid** cover (no restrict-to-`E(G)` step) and empirically **much sparser** than the completion L1 (e.g. IOMR 51 vs 79). |
+| `covering_lp_cover(G, solve=…, rounding=…, iomr=…)` | **GMR** / **IOMR** | **exact**/​**approx** | general | no | unified covering-LP cover (§6): `solve∈{enum,separation} × rounding∈{randomized,deterministic}` — all four combos. `broken_cycle_rounding_heuristic` and `threshold_rounding_cover` are two of its corners. |
 | `metric_repair_lp_separation(G, iomr=False/True)` | **GMR** / **IOMR** | **bound** (not a cover) | general | no | cutting-plane covering LP (§6): returns a value + fractional `y`, *not* a cover. Exact optimum for GMR (LP integral); a valid **lower bound** for IOMR (LP has a gap). |
 
 **L1: two modes.** `general=False` (default) keeps the increase-oriented LP (`x ≥ 0` → weights only
@@ -67,6 +69,15 @@ free-sign corrections `x = x⁺ − x⁻`, minimise `Σ(x⁺+x⁻)`, weights may
 Rounding is **sign-agnostic** — the cover is "which edges may change", so `l1_rounding_heuristic` samples
 on `|x_e|`; flipping `general` swaps the LP *and* the validity check (`iomr_verifier` vs `verifier`), so
 the increase-only mode returns a genuine IOMR cover.
+
+**L1 via separation (`l1_separation`).** The three L1 functions above enumerate every polygon inequality
+of the completion (`induced_cycle_matrix`) up front. `l1_separation` instead generates them on demand:
+solve the L1 LP over the current rows, form `w' = w+x`, run one shortest-path pass, add the polygon
+inequality for every edge its `w'`-detour undercuts, repeat until `w'` has no broken cycle. This drops
+both the enumeration *and* (with `complete_graph=False`, the default) the completion — it runs on `G`, so
+`x ≥ 0` forcing a light edge of every broken cycle up makes the support a **provably valid** cover of `G`
+(no restrict-to-`E(G)` gamble), and in practice it comes out **substantially sparser** than the
+completion-based L1. Same `general` flag; still a heuristic (L1 is a surrogate for the sparsest cover).
 
 `complete(G)` adds every missing edge `xy` with weight `dist_G(x,y)` (the metric completion; assumes
 `G` connected). On a complete graph the only chordless cycles are triangles, so the L1 / left-edge /
@@ -83,6 +94,7 @@ dimension; they return no cover, so they are intentionally absent from the table
 | name | type | constraints | variables | where | rounding |
 |---|---|---|---|---|---|
 | **L1 weight-correction** (`_l1_solve`, `l1_minimization`) | LP (`linprog`, `highs-ipm`) | polygon ineqs on `w+x` over chordless cycles of the completion (`induced_cycle_matrix`) | `x ≥ 0` (default) or free-sign `x=x⁺−x⁻` (`general=True`) | on `complete(G)` | support = cover; `l1_rounding_heuristic` |
+| **L1 via cutting planes** (`l1_separation`) | LP, cutting planes | same polygon ineqs, generated on demand via shortest paths (no `induced_cycle_matrix`) | `x ≥ 0` or free-sign | on `G` (default) or `complete(G)` | support = cover (provably valid on `G`) |
 | **Broken-cycle covering** (inside `broken_cycle_rounding_heuristic`) | LP relaxation (`linprog`, `highs`) | `B y ≥ 1`, `0 ≤ y ≤ 1` over broken cycles (`broken_cycle_incidence`, `drop_max=iomr`) | `y` per edge | on `G` | randomized rounding + greedy top-up (GMR or IOMR) |
 | **Exact hitting set** (`exact_metric_repair_ilp`) | ILP (`scipy.optimize.milp`) | `B y ≥ 1`, `y ∈ {0,1}` over broken cycles | `y` per edge | on `G` | — (exact) |
 | **Exact IOMR hitting set** (`…ilp(iomr=True)`) | ILP | `B' y ≥ 1` where each cycle's row `B'` **omits its max edge** | `y` per edge | on `G` | — (exact increase-only) |
@@ -191,9 +203,16 @@ the RSP DP memory is `O(w_max · n²)` — fine for small `w_max`, watch it for 
      over *all* broken cycles → **done, exactly**.
 4. Repeat. Because only binding cycles are ever added, the constraint set stays small.
 
-**Rounding the separation LP into a cover.**
+**Turning the covering LP into a cover — the 2×2 grid (`covering_lp_cover`).** Two orthogonal choices:
+**solve** ∈ {`enum` (§3, enumerate all length-bounded cycles), `separation` (cutting planes, scales)} ×
+**rounding** ∈ {`randomized`, `deterministic`}. `covering_lp_cover(G, solve=…, rounding=…, iomr=…)`
+exposes all four; `broken_cycle_rounding_heuristic` (= `enum`+`randomized`) and `threshold_rounding_cover`
+(= `separation`+`deterministic`) are two corners that now delegate to it. A shared oracle-driven top-up
+makes the returned cover **always valid**; `info['guaranteed']` flags when a *provable ratio* holds.
 
-- **Deterministic `f`-threshold rounding — IMPLEMENTED (`threshold_rounding_cover`).** Round UP every
+**Rounding the covering LP into a cover.**
+
+- **Deterministic `f`-threshold rounding — IMPLEMENTED (`threshold_rounding_cover` / `covering_lp_cover(rounding="deterministic")`).** Round UP every
   edge with `y*_e ≥ 1/f`, where `f = L` (the broken-cycle length bound) for GMR and `f = L−1` for IOMR
   (its rows drop each cycle's max edge). Since every broken cycle has `≤ f` constrained edges and
   `Σ_{e∈row} y*_e ≥ 1`, some edge per row clears `1/f`, so the rounded set hits every cycle:
@@ -203,8 +222,12 @@ the RSP DP memory is `O(w_max · n²)` — fine for small `w_max`, watch it for 
   forfeited (`info['guaranteed']` reports which). Measured (geometric): under `rsp`, GMR rounds to the
   **exact** cover (ratio 1.00 — the GMR LP is integral) and IOMR to ratio **1.0–1.22**, well inside the
   worst-case `f`; under `naive`, valid but ratio up to ~2.8.
-- Randomized rounding (O(log·OPT); genuine O(log n) only for bounded `w_max`) — *not yet wired to the
-  separation LP*; `broken_cycle_rounding_heuristic` implements it over the enumerated matrix instead.
+- **Randomized rounding — IMPLEMENTED (`covering_lp_cover(rounding="randomized")`).** Sample edge `e`
+  w.p. `min(1, scale·y_e)`, union over `rounds`, oracle-driven top-up. `O(log·OPT)` in expectation with
+  `scale ≈ ln(#constraints)` — genuine `O(log n)` only for bounded `w_max` (else `O(L·log n)`, since
+  `#cycles ≤ n^L`). `scale` defaults to `ln(#cycles)` under `enum` (known) and to `L·ln(n)` under
+  `separation` (the `ln(n^L)` bound). Now works over **both** the enumerated matrix *and* the separation
+  LP. The bound is whp/expected, so `info['guaranteed']` stays `False` (not certified per run).
 - Still open: primal–dual / region-growing with its own ratio; reweighted-L1 re-solving to sparsify.
 
 **Reuse.** The `verifier` already implements a separation oracle for *integral* covers (it finds an
