@@ -35,7 +35,8 @@ from graph_models import (
 )
 from metric_repair import (
     complete, domr_alg, pivot_heuristic, left_edge_heuristic, shortest_path_cover,
-    l1_min_heuristic, verifier, iomr_verifier, exact_metric_repair_ilp_separation,
+    l1_min_heuristic, l1_separation, covering_lp_cover, verifier, iomr_verifier,
+    exact_metric_repair_ilp_separation,
 )
 
 GENERATORS = {
@@ -58,6 +59,14 @@ ALGORITHMS = [
     ("spc_iomr",    "on_G",     "iomr",    lambda CC, comCC: shortest_path_cover(CC, general=False)),
     ("spc_iomr",    "complete", "iomr",    lambda CC, comCC: shortest_path_cover(comCC, general=False)),
     ("l1",          "on_G",     "general", lambda CC, comCC: l1_min_heuristic(CC)),
+    # Cutting-plane L1 (no enumeration/completion; runs on the component). general=True keeps repaired
+    # weights strictly positive (min_weight=1); general=False is the increase-only (IOMR) variant.
+    ("l1_sep",      "on_G",     "general", lambda CC, comCC: l1_separation(CC, general=True)),
+    ("l1_sep",      "on_G",     "iomr",    lambda CC, comCC: l1_separation(CC, general=False)),
+    # Covering-LP threshold rounding via separation (scales; f-approx). best_of_k=12 rounds several
+    # optimal-face vertices -- the strongest IOMR approximation heuristic (closes much of the LP gap).
+    ("cover_thr",     "on_G",   "iomr",    lambda CC, comCC: covering_lp_cover(CC, solve="separation", rounding="deterministic", iomr=True)[0]),
+    ("cover_thr_bok", "on_G",   "iomr",    lambda CC, comCC: covering_lp_cover(CC, solve="separation", rounding="deterministic", iomr=True, best_of_k=12, seed=0)[0]),
     # Exact ground-truth baselines (cutting-plane ILP; scales past enumeration -- see OVERVIEW.md sec 6).
     # These are the SLOW rows: comment them out for pure-heuristic timing runs. Each returns (cover,info),
     # so we take [0]. exact_iomr forces a hit on a light edge of every broken cycle (increase-only).

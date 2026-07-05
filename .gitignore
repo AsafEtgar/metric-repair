@@ -8,6 +8,9 @@ __pycache__/
 # --- Jupyter ---
 .ipynb_checkpoints/
 
+# --- Local scratch notebook (Sage-flavored `%run`; not part of the pure-Python port) ---
+sanity_checks.ipynb
+
 # --- Sage preparser cache ---
 *.sage.py
 

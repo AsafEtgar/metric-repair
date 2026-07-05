@@ -419,7 +419,7 @@ def MVD_Pivot(Kn):
 
 
 def _l1_solve(Gc, cycle_matrix=induced_cycle_matrix, solver="highs-ipm", reweight=0, eps=1e-3,
-              general=False):
+              general=False, min_weight=1.0):
     """Solve the L1 weight-correction LP on Gc; return (x, D): the correction vector and edge encoding.
 
     Two formulations, selected by `general`:
@@ -428,8 +428,11 @@ def _l1_solve(Gc, cycle_matrix=induced_cycle_matrix, solver="highs-ipm", reweigh
         cycle_matrix(Gc). This is the historical formulation (matches the Sage equivalence reference).
       * general=True (GENERAL MR, decreases allowed): free-sign corrections x = p - n (p, n >= 0),
         minimising the true L1 norm sum_e|x_e| = sum_e(p_e + n_e). Weights may decrease as well as
-        increase; the decrease is bounded by n_e <= w_e so a repaired weight never goes negative
-        (w + x stays a valid non-negative metric). The polygon constraints are unchanged: phi(w+x) >= 0.
+        increase. The decrease is bounded so the repaired weight stays STRICTLY POSITIVE, never 0: with
+        n_e <= max(0, w_e - min_weight) we get w + x >= min(min_weight, w_e) > 0. So a repaired distance
+        is always a valid positive metric weight (min_weight=1 => integer weights repair to >= 1; an edge
+        already below min_weight is simply frozen from below, never forced up). The polygon constraints
+        are unchanged: phi(w+x) >= 0.
 
     solver: linprog method governing WHICH optimal solution is returned (the optimum value is
     solver-independent -- only the support differs). MEASURED on this LP the effect is small (~a few
@@ -451,10 +454,11 @@ def _l1_solve(Gc, cycle_matrix=induced_cycle_matrix, solver="highs-ipm", reweigh
             x = linprog(c, A_ub=-phi, b_ub=phi @ w, method=solver).x
             c = 1.0 / (np.abs(x) + eps)        # reweight for the next pass
         return x, D
-    # general MR: x = p - n,  minimise sum(p + n),  phi(w + p - n) >= 0,  0 <= p,  0 <= n <= w.
+    # general MR: x = p - n,  minimise sum(p + n),  phi(w + p - n) >= 0,  0 <= p,  0 <= n <= w - min_w.
     A = sparse.hstack([-phi, phi]).tocsr()     # rows: -phi.p + phi.n <= phi.w  <=>  phi(w + p - n) >= 0
     b = phi @ w
-    bounds = [(0, None)] * m + [(0, float(wi)) for wi in w]   # p_e in [0, inf); n_e in [0, w_e]
+    # n_e <= max(0, w_e - min_weight)  =>  w + x = w + p - n >= min(min_weight, w_e) > 0 (never 0).
+    bounds = [(0, None)] * m + [(0, max(0.0, float(wi) - min_weight)) for wi in w]
     r = np.ones(m)
     x = np.zeros(m)
     for _ in range(reweight + 1):
@@ -465,25 +469,29 @@ def _l1_solve(Gc, cycle_matrix=induced_cycle_matrix, solver="highs-ipm", reweigh
     return x, D
 
 
-def l1_minimization(Gc, solver="highs-ipm", reweight=0, general=False):
+def l1_minimization(Gc, solver="highs-ipm", reweight=0, general=False, min_weight=1.0):
     """L1 metric repair on an already-completed graph Gc.
 
     Minimises the L1 norm of the edge-weight corrections subject to all chordless-cycle (metric)
     constraints, and returns the support of the correction (the cover). general=False keeps the
-    increase-oriented LP (x >= 0); general=True allows decreases (free-sign x) -- true general MR; see
-    _l1_solve. Defaults to the interior-point solver ('highs-ipm'), marginally the sparsest single-solve
-    choice measured here; set reweight > 0 (reweighted L1) for an even sparser support. (The LP OPTIMUM
-    is solver-independent; only which support is returned changes. Support cutoff 1e-7 on |x|.)"""
-    x, D = _l1_solve(Gc, induced_cycle_matrix, solver=solver, reweight=reweight, general=general)
+    increase-oriented LP (x >= 0); general=True allows decreases (free-sign x) -- true general MR, with
+    the repaired weight kept STRICTLY POSITIVE (w+x >= min(min_weight, w_e) > 0, never 0); see _l1_solve.
+    Defaults to the interior-point solver ('highs-ipm'), marginally the sparsest single-solve choice
+    measured here; set reweight > 0 (reweighted L1) for an even sparser support. (The LP OPTIMUM is
+    solver-independent; only which support is returned changes. Support cutoff 1e-7 on |x|.)"""
+    x, D = _l1_solve(Gc, induced_cycle_matrix, solver=solver, reweight=reweight, general=general,
+                     min_weight=min_weight)
     return {(u, v) for u, v in sorted_edges(Gc) if abs(x[D[(u, v)]]) > 1e-7}
 
 
-def l1_min_heuristic(G, solver="highs-ipm", reweight=0, general=False):
+def l1_min_heuristic(G, solver="highs-ipm", reweight=0, general=False, min_weight=1.0):
     """L1 metric-repair heuristic: complete G, solve the L1 minimisation over all metric (chordless-
     cycle) constraints of the completion, and return the support restricted to E(G). general=True solves
-    the general-MR LP (decreases allowed); general=False (default) the increase-oriented one."""
+    the general-MR LP (decreases allowed, repaired weights kept > 0 via min_weight); general=False
+    (default) the increase-oriented one."""
     G_edges = set(sorted_edges(G))
-    return {e for e in l1_minimization(complete(G), solver=solver, reweight=reweight, general=general)
+    return {e for e in l1_minimization(complete(G), solver=solver, reweight=reweight, general=general,
+                                       min_weight=min_weight)
             if e in G_edges}
 
 
@@ -527,7 +535,8 @@ def exact_metric_repair_ilp(G, max_len=None, iomr=False):
     return {inv[i] for i in np.nonzero(y)[0]}
 
 
-def l1_rounding_heuristic(G, rounds=20, scale=1.0, seed=None, solver="highs-ipm", general=False):
+def l1_rounding_heuristic(G, rounds=20, scale=1.0, seed=None, solver="highs-ipm", general=False,
+                          min_weight=1.0):
     """Randomized rounding of the L1 weight-correction LP into a (sparser) valid cover.
 
     Solve l1 on complete(G) to get corrections x, restrict to E(G), and over several rounds sample each
@@ -545,7 +554,7 @@ def l1_rounding_heuristic(G, rounds=20, scale=1.0, seed=None, solver="highs-ipm"
     general=False keeps only sets iomr_verifier accepts, so the result is a genuine increase-only cover
     (the increase-oriented x >= 0 LP already targets IOMR)."""
     Gc = complete(G)
-    x, D = _l1_solve(Gc, induced_cycle_matrix, solver=solver, general=general)
+    x, D = _l1_solve(Gc, induced_cycle_matrix, solver=solver, general=general, min_weight=min_weight)
     check = verifier if general else iomr_verifier       # validate against the matching MR variant
     support = [e for e in sorted_edges(G) if abs(x[D[e]]) > 1e-7]
     if not support:
@@ -574,15 +583,16 @@ def _l1_separation_phi(rows, m):
 
 
 def l1_separation(G, general=False, complete_graph=False, solver="highs-ipm", reweight=0,
-                  max_rounds=200, tol=1e-6, verbose=False):
+                  max_rounds=200, tol=1e-6, min_weight=1.0, verbose=False):
     """L1 weight-correction repair via CUTTING PLANES -- no chordless-cycle enumeration.
 
     The enumerated L1 (l1_minimization) materialises every polygon inequality of the completion up front
     (induced_cycle_matrix). This generates them on demand instead: solve the L1 LP over the current rows,
     form w' = w + x, run one all-pairs-shortest-path pass, and for every edge (u,v) whose shortest
     w'-detour undercuts it add that cycle's polygon inequality; stop when w' has no broken cycle. Minimises
-    sum|x_e| (general=True, GMR) or sum x_e with x >= 0 (general=False, increase-only/IOMR), and returns
-    the support restricted to E(G) -- the cover.
+    sum|x_e| (general=True, GMR -- repaired weights kept STRICTLY POSITIVE, w'>=min(min_weight, w_e)>0,
+    never 0) or sum x_e with x >= 0 (general=False, increase-only/IOMR), and returns the support restricted
+    to E(G) -- the cover.
 
     complete_graph=False (default) runs directly on G: no metric completion. On convergence w' has no
     broken cycle, and because x >= 0 forces some LIGHT edge of every broken cycle up (general=False) /
@@ -632,7 +642,8 @@ def l1_separation(G, general=False, complete_graph=False, solver="highs-ipm", re
                 c = 1.0 / (np.abs(x) + 1e-3)
         else:                                                # free-sign x = p - n: general MR
             Aub = sparse.hstack([-phi, phi]).tocsr()
-            bounds = [(0, None)] * m + [(0, float(wi)) for wi in w]
+            # n_e <= max(0, w_e - min_weight)  =>  w + x >= min(min_weight, w_e) > 0 (never 0)
+            bounds = [(0, None)] * m + [(0, max(0.0, float(wi) - min_weight)) for wi in w]
             rw = np.ones(m)
             for _ in range(reweight + 1):
                 z = linprog(np.concatenate([rw, rw]), A_ub=Aub, b_ub=b_ub, bounds=bounds,

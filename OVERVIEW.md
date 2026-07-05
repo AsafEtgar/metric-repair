@@ -65,7 +65,10 @@ IOMR variant** (the IOMR one hits each broken cycle at a *light* edge — see th
 
 **L1: two modes.** `general=False` (default) keeps the increase-oriented LP (`x ≥ 0` → weights only
 increase — the IOMR variant; matches the Sage equivalence reference). `general=True` is true general MR:
-free-sign corrections `x = x⁺ − x⁻`, minimise `Σ(x⁺+x⁻)`, weights may decrease (bounded so `w+x ≥ 0`).
+free-sign corrections `x = x⁺ − x⁻`, minimise `Σ(x⁺+x⁻)`, weights may decrease but are kept **strictly
+positive** — the decrease bound `x⁻_e ≤ max(0, w_e − min_weight)` guarantees `w+x ≥ min(min_weight, w_e) > 0`
+(never 0), so a repaired distance is a valid positive metric weight. `min_weight` defaults to **1** (integer
+weights repair to `≥ 1`); an edge already below the floor is simply frozen from below, never forced up.
 Rounding is **sign-agnostic** — the cover is "which edges may change", so `l1_rounding_heuristic` samples
 on `|x_e|`; flipping `general` swaps the LP *and* the validity check (`iomr_verifier` vs `verifier`), so
 the increase-only mode returns a genuine IOMR cover.
@@ -187,9 +190,13 @@ valid **lower bound** (gap seen up to ~5.6 at n=40/p=0.4). The **exact IOMR base
 separation ILP** (`exact_metric_repair_ilp_separation(iomr=True)`), not the LP. Registry rows
 `exact_general` / `exact_iomr` in `run_experiments.py` produce these ground-truth covers.
 
-**Remaining / "go from there":** (a) swap scipy `milp` for **Gurobi** *only if* a future instance has an
-integrality gap (so far none); (b) rounding schemes (below) for an upper-bound cover in that case; (c)
-the RSP DP memory is `O(w_max · n²)` — fine for small `w_max`, watch it for wide weight ranges.
+**Remaining / "go from there":** (a) **Gurobi** — the GMR LP stays integral (no gap), but **IOMR has a
+real integrality gap** (§2/§6), so the original "swap only if a gap appears" trigger has fired *in
+principle*. In practice it is **not yet needed**: the IOMR separation ILP still solves to the proven
+optimum and fast, so scipy `milp` suffices — revisit Gurobi only if a future instance makes that ILP the
+bottleneck. (b) rounding schemes (below) give the upper-bound cover in the IOMR-gap regime —
+`threshold_rounding_cover` / `covering_lp_cover` now do this. (c) the RSP DP memory is `O(w_max · n²)` —
+fine for small `w_max`, watch it for wide weight ranges.
 
 **Cutting-plane loop.**
 1. Start from a small constraint seed (e.g. broken triangles, or empty).
