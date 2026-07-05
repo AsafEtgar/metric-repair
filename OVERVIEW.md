@@ -222,6 +222,14 @@ makes the returned cover **always valid**; `info['guaranteed']` flags when a *pr
   forfeited (`info['guaranteed']` reports which). Measured (geometric): under `rsp`, GMR rounds to the
   **exact** cover (ratio 1.00 — the GMR LP is integral) and IOMR to ratio **1.0–1.22**, well inside the
   worst-case `f`; under `naive`, valid but ratio up to ~2.8.
+  - **Multi-vertex (`best_of_k>1`).** Rounding a *single* LP optimum is arbitrary when the optimum is
+    non-unique (the IOMR gap). `covering_lp_cover(rounding="deterministic", best_of_k=k)` rounds `k`
+    distinct vertices of the **optimal face** `{y : 1·y = OPT, By ≥ 1}` — found by minimising a secondary
+    objective over it (`_optimal_face_vertices`): `vertex_mode="reweight"` (sparsest-support vertex),
+    `"random"` (signed Gaussian), or `"both"` (default, pools both — neither dominates) — and keeps the
+    smallest valid cover. Every candidate is optimal so the `f`-bound survives. Cheap (`k` LP solves), a
+    no-op for GMR (unique/integral optimum). Measured (IOMR): frequently **recovers the exact optimum**
+    the single vertex missed — 65→46, 56→46, 65→57 across test instances.
 - **Randomized rounding — IMPLEMENTED (`covering_lp_cover(rounding="randomized")`).** Sample edge `e`
   w.p. `min(1, scale·y_e)`, union over `rounds`, oracle-driven top-up. `O(log·OPT)` in expectation with
   `scale ≈ ln(#constraints)` — genuine `O(log n)` only for bounded `w_max` (else `O(L·log n)`, since

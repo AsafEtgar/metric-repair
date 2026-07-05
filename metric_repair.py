@@ -930,15 +930,17 @@ def _rsp_separation(G, yvec, D, tol=1e-6, max_cuts=None, iomr=False):
 
 
 def metric_repair_lp_separation(G, max_rounds=200, tol=1e-6, solver="highs-ds", oracle="rsp",
-                                iomr=False, verbose=False):
+                                iomr=False, verbose=False, return_rows=False):
     """Cutting-plane LP lower bound on the minimum metric-repair cover, via a separation oracle.
 
     Solves  min 1.y  s.t. (added broken-cycle constraints) y >= 1, 0 <= y <= 1, adding only violated
-    cycles until the oracle finds none. Returns (lp_value, y, D, n_cuts). `lp_value` is a valid LOWER
-    BOUND on the exact cover size (hence on every heuristic's cover size), and it never enumerates all
-    cycles, so it scales to large n. Only the active edges (those in some cut) enter the LP, and the
-    default dual-simplex solver returns a vertex -- so when the polytope is integral the returned y is
-    integral and `lp_value` IS the exact optimum.
+    cycles until the oracle finds none. Returns (lp_value, y, D, n_cuts) -- or (..., n_cuts, rows) when
+    return_rows=True, where `rows` is the accumulated list of cut column-sets (the constraint matrix, for
+    re-optimising over the same polytope). `lp_value` is a valid LOWER BOUND on the exact cover size
+    (hence on every heuristic's cover size), and it never enumerates all cycles, so it scales to large n.
+    Only the active edges (those in some cut) enter the LP, and the default dual-simplex solver returns a
+    vertex -- so when the polytope is integral the returned y is integral and `lp_value` IS the exact
+    optimum.
 
     iomr=False (default) is general MR. iomr=True is increase-only: each cut omits its cycle's maximum
     edge, so `lp_value` is a lower bound on the exact IOMR cover (see _rsp_separation / _violated_cuts).
@@ -976,6 +978,8 @@ def metric_repair_lp_separation(G, max_rounds=200, tol=1e-6, solver="highs-ds", 
         if verbose:
             print(f"[lp-sep] round {r}: {len(rows)} cuts, {ma} active vars, lp={val:.4f}  "
                   f"({'rsp' if use_rsp else 'naive'})")
+    if return_rows:
+        return val, y, D, len(rows), rows
     return val, y, D, len(rows)
 
 
@@ -1072,37 +1076,96 @@ def threshold_rounding_cover(G, oracle="rsp", iomr=False, tol=1e-6, verbose=Fals
 
 def _covering_lp_fractional(G, solve, iomr, oracle, max_len, tol, lp_solver, verbose):
     """Solve the covering LP  min 1.y  s.t.  B y >= 1, 0<=y<=1  (broken-cycle hitting set, drop_max=iomr)
-    and return (y, D, check, n_constraints):
+    and return (y, D, check, n_constraints, Bmat):
       * y     -- the fractional optimum (length m, indexed by D),
       * check -- check(sol) -> list of violated cuts (column frozensets) for a candidate 0/1 array sol,
                  empty iff sol is a valid cover,
-      * n_constraints -- number of constraints known up front (the cycle count for "enum", else None).
+      * n_constraints -- number of constraints known up front (the cycle count for "enum", else None),
+      * Bmat  -- the (n_constraints x m) constraint matrix, for re-optimising over the same polytope
+                 (multi-vertex rounding). For "separation" it is the accumulated cut matrix.
     solve="enum" builds the full length-bounded matrix; "separation" runs metric_repair_lp_separation and
     uses the exact integral oracle for `check`."""
     m = G.number_of_edges()
     if solve == "separation":
-        _, y, D, _ = metric_repair_lp_separation(
-            G, oracle=oracle, iomr=iomr, tol=tol, solver=lp_solver, verbose=verbose)
+        _, y, D, _, rows = metric_repair_lp_separation(
+            G, oracle=oracle, iomr=iomr, tol=tol, solver=lp_solver, verbose=verbose, return_rows=True)
+        Bmat = _cuts_to_matrix(rows, m) if rows else sparse.csr_matrix((0, m))
 
         def check(sol):
             return _violated_cuts(G, sol, D, integral=True, tol=tol, iomr=iomr)
-        return y, D, check, None
+        return y, D, check, None, Bmat
     # enumeration
     B, n_cyc, D = broken_cycle_incidence(G, max_len, drop_max=iomr)
     if n_cyc == 0:
-        return np.zeros(m), D, (lambda sol: []), 0
+        return np.zeros(m), D, (lambda sol: []), 0, sparse.csr_matrix((0, m))
     y = linprog(np.ones(m), A_ub=-B, b_ub=-np.ones(n_cyc), bounds=(0, 1), method=lp_solver).x
     Bcsr = B.tocsr()
 
     def check(sol):
         hit = np.asarray(Bcsr @ np.asarray(sol)).ravel()
         return [frozenset(Bcsr.getrow(c).indices.tolist()) for c in np.nonzero(hit < 0.5)[0]]
-    return y, D, check, n_cyc
+    return y, D, check, n_cyc, Bcsr
+
+
+def _optimal_face_vertices(Bmat, m, opt, k, mode, seed, lp_solver, tol, y0):
+    """Return distinct optimal vertices of the covering LP's OPTIMAL FACE
+    {y : 1.y <= opt+tol, Bmat y >= 1, 0<=y<=1}, each as a length-m array, found by minimising a secondary
+    objective over that face (tie-breaking within the optimum).
+
+    mode="reweight": iterated reweighted-L1 (cost_e <- 1/(|y_e|+eps)) seeded from y0 -- drives toward the
+                     SPARSEST-support optimal vertex (fewest nonzeros -> usually the smallest threshold
+                     rounding). mode="random": signed Gaussian directions for diversity. mode="both" runs
+                     k of each and pools them (empirically neither dominates, so this wins most often).
+    Only ACTIVE columns (those in some constraint) are optimised; the rest stay 0 (an inactive edge on no
+    cycle must not be pulled in by a negative random cost). Returns [] if the face is a single point."""
+    active = np.unique(Bmat.nonzero()[1])
+    if active.size == 0:
+        return []
+    Br = Bmat[:, active].tocsr()
+    ones_row = sparse.csr_matrix(np.ones((1, active.size)))
+    A_ub = sparse.vstack([-Br, ones_row]).tocsr()                   # Br y>=1  and  1.y<=opt+tol
+    b_ub = np.concatenate([-np.ones(Br.shape[0]), [opt + tol]])
+    seen, verts = set(), []
+    for md in (["reweight", "random"] if mode == "both" else [mode]):
+        rng = np.random.default_rng(seed)
+        c = 1.0 / (np.abs(y0[active]) + 1e-3) if md == "reweight" else rng.standard_normal(active.size)
+        for _ in range(k):
+            res = linprog(c, A_ub=A_ub, b_ub=b_ub, bounds=(0, 1), method=lp_solver)
+            if res.x is None:
+                c = rng.standard_normal(active.size)     # solve failed; try another direction
+                continue
+            yv = np.zeros(m)
+            yv[active] = res.x
+            key = tuple(np.round(res.x, 6))
+            if key not in seen:
+                seen.add(key)
+                verts.append(yv)
+            c = 1.0 / (np.abs(res.x) + 1e-3) if md == "reweight" else rng.standard_normal(active.size)
+    return verts
+
+
+def _threshold_round_topup(yv, f, check, m, tol):
+    """Round UP every edge with yv_e >= 1/f, then oracle-driven top-up to a valid cover. Returns
+    (cols, added). Tie-break in the top-up uses yv (the vertex being rounded)."""
+    thr = (1.0 / f) if f else 0.5
+    cols = set(np.nonzero(yv >= thr - tol)[0].tolist())
+    added = 0
+    for _ in range(m + 1):
+        sol = np.zeros(m)
+        if cols:
+            sol[list(cols)] = 1.0
+        cuts = check(sol)
+        if not cuts:
+            break
+        for cut in cuts:
+            cols.add(max(cut, key=lambda c: yv[c]))
+            added += 1
+    return cols, added
 
 
 def covering_lp_cover(G, solve="separation", rounding="deterministic", iomr=False, oracle="rsp",
-                      max_len=None, rounds=20, scale=None, seed=None, tol=1e-6, solver=None,
-                      verbose=False):
+                      max_len=None, rounds=20, scale=None, best_of_k=1, vertex_mode="both",
+                      seed=None, tol=1e-6, solver=None, verbose=False):
     """Covering-LP metric-repair cover, exposing the two ORTHOGONAL choices as flags:
 
         solve    = "enum" | "separation"           -- how  min 1.y s.t. By>=1  is built/solved
@@ -1124,10 +1187,21 @@ def covering_lp_cover(G, solve="separation", rounding="deterministic", iomr=Fals
                       expectation with scale~ln(#constraints). scale defaults to ln(#cycles) for "enum"
                       and to L*ln(n) (an ln(n^L) bound on #cycles) for "separation".
 
-    info keys: solve, rounding, iomr, lp_value, f, scale, rounded (size before top-up), added (top-up
-    edges), size, guaranteed (True iff the deterministic f-bound provably holds this run)."""
+    best_of_k (deterministic only): when > 1, round several DISTINCT optimal vertices of the LP's optimal
+    face (found by _optimal_face_vertices) and keep the smallest valid cover. Only helps when the optimum
+    is non-unique (the IOMR-gap regime; the GMR LP is integral/usually unique) -- there it frequently
+    recovers the exact optimum. vertex_mode picks the secondary objective that tie-breaks within the
+    optimal face: "reweight" drives toward the sparsest-support vertex, "random" samples signed Gaussian
+    directions, "both" (default) pools k of each and keeps the best (neither dominates in practice). Every
+    candidate vertex is optimal, so the f-approximation still holds for the winner; on the separation LP an
+    alternate restricted-optimal vertex can violate a not-yet-added cycle -- the top-up fixes validity but
+    such a winner is then not marked guaranteed.
+
+    info keys: solve, rounding, iomr, lp_value, f, scale, best_of_k, vertices_tried, rounded (size before
+    top-up), added (top-up edges), size, guaranteed (True iff the deterministic f-bound provably holds)."""
     lp_solver = solver or ("highs-ds" if solve == "separation" else "highs")
-    y, D, check, ncon = _covering_lp_fractional(G, solve, iomr, oracle, max_len, tol, lp_solver, verbose)
+    y, D, check, ncon, Bmat = _covering_lp_fractional(
+        G, solve, iomr, oracle, max_len, tol, lp_solver, verbose)
     inv = {i: e for e, i in D.items()}
     m = len(inv)
     n = G.number_of_nodes()
@@ -1135,10 +1209,19 @@ def covering_lp_cover(G, solve="separation", rounding="deterministic", iomr=Fals
     lp_value = float(np.sum(y))
     f = (max(1, (L - 1) if iomr else L)) if L is not None else None
     used_scale = None
+    vertices_tried = 1
 
     if rounding == "deterministic":
-        thr = (1.0 / f) if f else 0.5
-        cols = set(np.nonzero(y >= thr - tol)[0].tolist())
+        cols, added = _threshold_round_topup(y, f, check, m, tol)
+        if best_of_k > 1:                                # round several optimal vertices, keep smallest
+            verts = _optimal_face_vertices(Bmat, m, lp_value, best_of_k - 1, vertex_mode,
+                                           seed, lp_solver, tol, y)
+            vertices_tried = 1 + len(verts)
+            for yv in verts:
+                cols_v, added_v = _threshold_round_topup(yv, f, check, m, tol)
+                if len(cols_v) < len(cols):
+                    cols, added = cols_v, added_v
+        rounded = len(cols) - added
     elif rounding == "randomized":
         if scale is None:
             base = float(np.log((ncon if ncon else n) + 1)) if solve == "enum" \
@@ -1154,21 +1237,20 @@ def covering_lp_cover(G, solve="separation", rounding="deterministic", iomr=Fals
             sol[picks] = 1.0
             if not check(sol):
                 break
+        rounded = len(cols)
+        added = 0                                        # feasibility top-up (valid cover always)
+        for _ in range(m + 1):
+            sol = np.zeros(m)
+            if cols:
+                sol[list(cols)] = 1.0
+            cuts = check(sol)
+            if not cuts:
+                break
+            for cut in cuts:
+                cols.add(max(cut, key=lambda c: y[c]))
+                added += 1
     else:
         raise ValueError(f"rounding must be 'randomized' or 'deterministic', got {rounding!r}")
-    rounded = len(cols)
-
-    added = 0                                            # shared feasibility top-up (valid cover always)
-    for _ in range(m + 1):
-        sol = np.zeros(m)
-        if cols:
-            sol[list(cols)] = 1.0
-        cuts = check(sol)
-        if not cuts:
-            break
-        for cut in cuts:
-            cols.add(max(cut, key=lambda c: y[c]))       # add the most-fractional edge of a missed cut
-            added += 1
 
     if rounding == "deterministic" and f is not None and added == 0:
         guaranteed = (solve == "enum") or (oracle == "rsp" and _positive_integer_weights(G))
@@ -1176,9 +1258,9 @@ def covering_lp_cover(G, solve="separation", rounding="deterministic", iomr=Fals
         guaranteed = False                               # randomized bound is whp/expected, not certified
     S = {inv[c] for c in cols}
     info = {"solve": solve, "rounding": rounding, "iomr": iomr, "lp_value": lp_value, "f": f,
-            "scale": used_scale, "rounded": rounded, "added": added, "size": len(S),
-            "guaranteed": guaranteed}
+            "scale": used_scale, "best_of_k": best_of_k, "vertices_tried": vertices_tried,
+            "rounded": rounded, "added": added, "size": len(S), "guaranteed": guaranteed}
     if verbose:
-        print(f"[cov-lp] solve={solve} round={rounding} lp={lp_value:.3f} f={f} "
+        print(f"[cov-lp] solve={solve} round={rounding} lp={lp_value:.3f} f={f} tried={vertices_tried} "
               f"rounded={rounded} added={added} size={len(S)} guaranteed={guaranteed}")
     return S, info
