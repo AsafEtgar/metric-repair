@@ -28,6 +28,9 @@ dsq-joblist-*.sh
 results_all.csv
 logs/
 
+# --- Analysis output (regenerable from results by experiments/analyze.py) ---
+analysis/
+
 # --- Real datasets (large/private stays local; structure + examples are tracked) ---
 data/raw/*
 !data/raw/.gitkeep
