@@ -249,15 +249,23 @@ makes the returned cover **always valid**; `info['guaranteed']` flags when a *pr
   boundary at a radius `< ½` meeting the volume bound, delete the ball, recurse. **Under full separation**
   — every pair's shortest `x*`-detour `≥ 1` (`info['full_separation']`, `info['min_pair_dist']`) — this is
   a provable **`O(log|H|)=O(log n)`** approximation with **no `W` factor** (`guaranteed=True`).
-  ⚠ **Empirically full separation never holds** on the geometric IOMR instances: `min_pair_dist = 0` every
-  time, because the LP optimum leaves some *unbudgeted* detour at `x*=0` (it's unconstrained). So the
-  `O(log n)` route is **unreachable** here and region growing degenerates to the oracle top-up (still a
-  valid, competitive cover — it beat threshold on some instances — but no ratio). Verified the subroutine
-  is correct on a hand-built separable instance. Net: **this matches the theory** — for this weight regime
-  the deterministic `f`-rounding's unconditional `O(W)` is the better guaranteed option; region growing
-  only wins when full separation holds *and* `W` is large. (See the write-up's Remark 5.4 and [Baier et al.]
+  ⚠ **Empirically full separation never holds** on the geometric IOMR instances, and not marginally:
+  a sweep of the shortest `x*`-detour over *every* heavy pair found **`frac(detour ≥ 1) = 0` and median
+  detour `= 0`** at every size and density tested — n∈{50,100} exact-RSP `x*`, and n∈{500,700}, p∈{0.5,0.6,0.7}
+  with the naive `x*` (`|H|` up to ~43k). The LP optimum concentrates mass on a sparse "active" edge set,
+  so essentially every heavy pair has a near-zero-`x*` (unbudgeted) detour. So the `O(log n)` route is
+  **unreachable** here and region growing degenerates to the oracle top-up (still a valid, competitive
+  cover — it beat threshold on some instances — but no ratio). Verified the subroutine is correct on a
+  hand-built separable instance. Net: **this matches the theory** — for this weight regime the
+  deterministic `f`-rounding's unconditional `O(W)` is the better guaranteed option; region growing only
+  wins when full separation holds *and* `W` is large. (See the write-up's Remark 5.4 and [Baier et al.]
   length-bounded-cut gap; and note `f = L−1 ≤ W−1`, so `f`-rounding already gives `O(W)` — dominating the
   paper's unconditional `O(W log n)`, and `O(log n)` on the WRG model where `W=O(log n)`.)
+  - **Scaling caveat this exposed:** the *exact* (RSP) IOMR separation LP does **not** scale like the GMR
+    one. GMR's LP is integral and reached n=1000 in ~11 min; the **IOMR LP has a gap, so its fractional
+    optimum forces many cutting-plane rounds** — n=100 took ~100 s and n=200 did not finish in ~20 min.
+    For IOMR at large n use the **naive** oracle (looser LP, but seconds: n=700/p=0.5 in ~30 s) or the
+    separation **ILP** (exact cover, not a fractional bound).
 - Still open: primal–dual with its own ratio; reweighted-L1 re-solving to sparsify.
 
 **Reuse.** The `verifier` already implements a separation oracle for *integral* covers (it finds an
