@@ -89,7 +89,10 @@ Run **per connected component** (results aggregated, §7). `n≤k` = runs only w
 | `left_edge` | IOMR | Gilbert–Jain (completion) | — | — |
 
 **Reference optimum for the ratio:** exact OPT from `gmr_ilp` / `iomr_ilp` when `converged`, else the
-tightest LP lower bound (`*_lp_rsp` where available, else `*_lp_naive`).
+tightest LP lower bound (`*_lp_rsp` where available, else `*_lp_naive`). GMR converges everywhere;
+**exact IOMR (`iomr_ilp`) converges only on small-OPT instances** (Exp 2a onset, Exp 2b sparse) within its
+3-min cap — elsewhere the IOMR ratio is measured against the LP lower bound. Comparing `gmr_ilp` vs
+`gmr_lp_rsp` sizes also **measures GMR LP integrality** empirically (they differ iff the LP has a gap).
 
 **Gates rationale:** `iomr_lp_rsp`/`iomr_thr_rsp` — the rsp IOMR LP does not converge past ~n=150 (the
 integrality gap forces many rounds); `region growing` — its multicut is `O(V·E)` per heavy pair.
@@ -110,9 +113,11 @@ Lower-bound rows (`gmr_lp_naive`, `iomr_lp_*`) have empty `size`/`valid` and rep
 
 ## 6. Caps & resources
 
-- **Time:** 30 min per (algorithm, instance) [`TIMEOUT_S`, fork-enforced]; 120 min per task [`TASK_BUDGET_S`;
-  later algorithms marked `skipped_time`]. SLURM `--time 02:30:00`, references run first so they're never
-  starved.
+- **Time:** 30 min per (algorithm, instance) [`TIMEOUT_S`, fork-enforced]; **`iomr_ilp` is capped at 3 min**
+  [`ALGO_TIMEOUT`] because the exact IOMR hitting set is NP-hard and runs >10 min once OPT is large (it
+  stays exact on small-OPT instances, records `converged=False` on the rest); 120 min per task
+  [`TASK_BUDGET_S`; later algorithms marked `skipped_time`]. SLURM `--time 02:30:00`, references run first
+  so they're never starved.
 - **Memory:** 1 GB per task (`--mem-per-cpu 1g`) — heavily over-provisioned; real peak ≈ 16–90 MB.
   `peak_mb` recorded per algorithm. Single-threaded BLAS (`OMP_NUM_THREADS=1`) — fork-safe, deterministic
   timing.
@@ -143,8 +148,10 @@ reproduces task K bit-for-bit.
 
 ## 9. Known caveats (expected, not bugs)
 
-- **Exact IOMR sep-ILP at n=500** is unmeasured — may not converge within the 30-min cap (recorded via
-  `converged=False`); it's the main runtime uncertainty.
+- **Exact IOMR sep-ILP does not scale** — measured >10 min already at n=100/p=0.3 (its cover is ~500+
+  edges, an NP-hard hitting set). Hence the 3-min cap: it yields the true IOMR optimum only where OPT is
+  small (onset / sparse), and `converged=False` otherwise. So tight IOMR references exist only at small n /
+  small OPT; at scale the IOMR ratio is against the (looser) LP lower bound.
 - **Region growing** degenerates in this weight regime (full separation never holds → `full_separation`
   will read `False`, `min_pair_dist ≈ 0`); it stays valid via the oracle top-up but carries no ratio.
 - **naive-oracle LP bounds** (`gmr_lp_naive`, `iomr_lp_naive`) are loose lower bounds, not covers.

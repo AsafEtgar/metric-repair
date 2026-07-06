@@ -38,6 +38,10 @@ from metric_repair import (                                            # noqa: E
 # ----------------------------------------------------------------------------
 N_SAMPLES = 40
 TIMEOUT_S = 30 * 60          # per (algorithm, instance) wall-clock cap
+# Per-algorithm overrides. iomr_ilp (exact IOMR hitting set) is NP-hard and slow once OPT is large -- it
+# ran >10 min at n=100. Cap it at 3 min so it stays EXACT on small-OPT instances (Exp 2a onset, Exp 2b
+# sparse), reports converged=False (no exact_opt) on the rest, and never dominates the budget.
+ALGO_TIMEOUT = {"iomr_ilp": 3 * 60}
 TASK_BUDGET_S = 120 * 60     # per-task (all algorithms on one graph) budget; later algos -> skipped_time
                              # so a slow graph can't blow the SLURM per-task limit and lose the whole CSV.
 REGION_H_MAX = 200           # region growing only when total broken-edge count |H| is small (it's O(V*E)/pair)
@@ -280,7 +284,8 @@ def run_one_task(task_index, outdir):
         elif not nonmetric:                        # whole graph already metric -> empty cover
             row.update(status="ok", size=0, valid=1, cpu=0.0, wall=0.0, peak_mb=0.0)
         else:
-            results = [run_isolated(fn, CC, VERIFY[vkey], TIMEOUT_S) for CC in nonmetric]
+            to = ALGO_TIMEOUT.get(name, TIMEOUT_S)
+            results = [run_isolated(fn, CC, VERIFY[vkey], to) for CC in nonmetric]
             row.update(_aggregate(results))
             elapsed += row.get("wall") or 0.0
         rows.append(row)
