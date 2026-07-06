@@ -29,10 +29,12 @@ bash experiments/submit_dsq.sh metricrepair <your_netid>
 ```
 `submit_dsq.sh` sets: `day` partition, `-A pi_<netid>`, 1 core + 1 GB per task, `--time 02:30:00`,
 **`--max-jobs 64`** (64 concurrent cores). Edit `MAXJOBS` at the top of the script to change it.
-Each joblist line is prefixed with `module load miniconda && conda activate <env>` so every task
-self-activates on the compute node — dSQ runs each line in a bare shell that does **not** inherit your
-login-shell env, so a plain `python` there would be system Python (no numpy) and fail instantly. Sanity-check:
-`head -1 joblist.txt` should start with `module load miniconda && conda activate metricrepair && python …`.
+Each joblist line is prefixed with `module load miniconda && source "$(conda info --base)/etc/profile.d/conda.sh"
+&& conda activate <env>` so every task self-activates on the compute node — dSQ runs each line in a bare,
+**non-interactive** shell that does not inherit your login-shell env, and where `conda activate` alone errors
+with *"Run 'conda init' before …"* because `module load` doesn't install conda's shell functions there
+(sourcing `conda.sh` does). A plain `python` there would be system Python (no numpy) and fail instantly.
+Sanity-check with `bash -c "$(head -1 joblist.txt)"` (see step 2b).
 
 ## 3. Submit and monitor
 ```bash

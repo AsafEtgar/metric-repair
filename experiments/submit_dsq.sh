@@ -19,10 +19,13 @@ mkdir -p "$OUTDIR" logs
 NTASKS=$(python experiments/run_task.py --count)
 echo "tasks: $NTASKS"
 
-# --setup bakes env activation into EVERY task line: dSQ runs each line in a bare shell that does NOT
-# inherit this login-shell env, so a plain `python` there is system Python (no numpy) -> instant failure.
+# --setup bakes env activation into EVERY task line: dSQ runs each line in a bare, non-interactive shell
+# that does NOT inherit this login-shell env, so a plain `python` there is system Python (no numpy) ->
+# instant failure. `conda activate` also needs conda's shell functions, which `module load` does NOT
+# install in a non-interactive shell (-> "Run 'conda init' before ..."), so we source conda.sh first.
+CONDA_SETUP='module load miniconda && source "$(conda info --base)/etc/profile.d/conda.sh" && conda activate '"$ENV"
 python experiments/make_joblist.py --python python --outdir "$OUTDIR" --joblist joblist.txt \
-    --setup "module load miniconda && conda activate $ENV"
+    --setup "$CONDA_SETUP"
 
 # dSQ turns joblist.txt into an array batch script; --max-jobs throttles concurrency to $MAXJOBS.
 # --time is PER TASK (one graph = the whole 19-algorithm suite); the harness caps each algorithm at 30 min
