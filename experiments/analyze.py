@@ -101,6 +101,9 @@ def derive(df):
     df["ref"] = np.where(is_gmr, df["gmr_ref"], df["iomr_ref"])
     df["ref_kind"] = np.where(is_gmr, df["gmr_ref_kind"], df["iomr_ref_kind"])
     df["ratio"] = df["size"] / df["ref"]
+    # DOMR ratio: size / |DOMR| (= size / H, the broken-edge count). Since DOMR is a feasible GMR cover,
+    # GMR_OPT <= |DOMR|, so for GMR variants this is a LOWER bound on the true GMR approximation ratio.
+    df["ratio_domr"] = df["size"] / df["H"].where(df["H"] > 0)
     return df
 
 
@@ -121,6 +124,9 @@ def aggregate(df):
         n_samples=("sample", "nunique"),
         size_med=("size", "median"), size_q25=("size", _q(.25)), size_q75=("size", _q(.75)),
         ratio_med=("ratio", "median"), ratio_q25=("ratio", _q(.25)), ratio_q75=("ratio", _q(.75)),
+        ratio_domr_med=("ratio_domr", "median"), ratio_domr_q25=("ratio_domr", _q(.25)),
+        ratio_domr_q75=("ratio_domr", _q(.75)),
+        w_max_med=("w_max", "median"), w_max_min=("w_max", "min"), w_max_max=("w_max", "max"),
         cpu_med=("cpu", "median"), wall_med=("wall", "median"), peak_med=("peak_mb", "median"),
         valid_rate=("valid", "mean"),
         converged_rate=("converged", "mean"),
@@ -128,6 +134,46 @@ def aggregate(df):
     ).reset_index()
     summ["timeout_rate"] = g["status"].apply(lambda s: (s == "timeout").mean()).values
     return summ.sort_values(keys).reset_index(drop=True)
+
+
+def runtime_weight_fit(df, min_points=8):
+    """Per-algorithm log-log OLS: log(cpu) ~ intercept + size_exp*log(n) + weight_exp*log(w_max).
+
+    `weight_exp` is the runtime-vs-weight-size dependency metric the design asks for: how CPU scales with
+    the largest edge weight `w_max`. The rsp oracle's weight-budget DP is O(w_max*n^2), so we expect
+    `weight_exp ~ 1` for the rsp methods (gmr_lp_rsp, iomr_lp_rsp, iomr_thr_rsp) and `~0` for the naive /
+    purely combinatorial ones. `size_exp` is the graph-size exponent. Pools every instance where the algo
+    ran (status ok, cpu>0); an exponent is NaN when its regressor doesn't vary in that pool (e.g. n is
+    pinned at 500 across Exp 2, so `size_exp` is only identifiable once Exp 1's n-sweep is present). `r2`
+    and `n_points` gauge trust. This is a coarse scaling summary for the runtime story, not a causal model
+    (n and w_max are correlated within a single experiment; identifiability comes from pooling Exp 1 + 2).
+    """
+    d = df[(df["status"] == "ok") & (df["cpu"] > 0) & (df["n"] > 0) & (df["w_max"] > 0)].copy()
+    rows = []
+    for (algo, variant), g in d.groupby(["algo", "variant"], dropna=False):
+        y = np.log(g["cpu"].to_numpy(dtype=float))
+        ln = np.log(g["n"].to_numpy(dtype=float))
+        lw = np.log(g["w_max"].to_numpy(dtype=float))
+        cols, names = [np.ones_like(y)], ["intercept"]
+        if ln.std() > 1e-9:                     # size_exp identifiable only if n varies in this pool
+            cols.append(ln); names.append("size_exp")
+        if lw.std() > 1e-9:                     # weight_exp identifiable only if w_max varies
+            cols.append(lw); names.append("weight_exp")
+        rec = {"algo": algo, "variant": variant, "n_points": int(len(y)),
+               "size_exp": np.nan, "weight_exp": np.nan, "intercept": np.nan, "r2": np.nan,
+               "n_min": int(g["n"].min()), "n_max": int(g["n"].max()),
+               "w_max_min": float(g["w_max"].min()), "w_max_max": float(g["w_max"].max()),
+               "cpu_med": float(np.median(g["cpu"]))}
+        if len(y) >= min_points and len(cols) >= 2:
+            X = np.column_stack(cols)
+            beta, *_ = np.linalg.lstsq(X, y, rcond=None)
+            resid = y - X @ beta
+            ss_tot = float(((y - y.mean()) ** 2).sum())
+            rec["r2"] = float(1 - (resid ** 2).sum() / ss_tot) if ss_tot > 0 else np.nan
+            for name, b in zip(names, beta):
+                rec[name] = float(b)
+        rows.append(rec)
+    return pd.DataFrame(rows).sort_values(["algo", "variant"]).reset_index(drop=True)
 
 
 def main():
@@ -141,12 +187,20 @@ def main():
     problems = validate(df)
     df = derive(df)
     summ = aggregate(df)
+    fit = runtime_weight_fit(df)
 
     rows_path = os.path.join(a.outdir, "rows_with_ratio.csv")
     summ_path = os.path.join(a.outdir, "summary.csv")
+    fit_path = os.path.join(a.outdir, "runtime_weight_fit.csv")
     df.to_csv(rows_path, index=False)
     summ.to_csv(summ_path, index=False)
-    print(f"\nwrote {rows_path} ({len(df)} rows) and {summ_path} ({len(summ)} groups)")
+    fit.to_csv(fit_path, index=False)
+    print(f"\nwrote {rows_path} ({len(df)} rows), {summ_path} ({len(summ)} groups), "
+          f"{fit_path} ({len(fit)} algos)")
+
+    print("\nruntime scaling  log(cpu) ~ size_exp*log(n) + weight_exp*log(w_max):")
+    print(fit[["algo", "variant", "n_points", "size_exp", "weight_exp", "r2"]].to_string(index=False))
+
     if problems:
         print(f"\n*** {problems} non-GMR-gap invalid covers -- investigate before trusting the analysis ***")
 
