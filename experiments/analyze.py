@@ -114,24 +114,39 @@ def _q(p):
     return f
 
 
+# Columns summarised with the full distribution (median, IQR, mean, std) over the samples of a config.
+# size/ratio/ratio_domr = the science; H = |DOMR| non-metricity magnitude; ref = the absolute OPT (plot
+# OPT-vs-alpha directly); cpu/wall = runtime (IQR -> error bars); rounds/cuts = cutting-plane work.
+DIST_COLS = ["size", "ratio", "ratio_domr", "H", "ref", "cpu", "wall", "rounds", "cuts"]
+
+
 def aggregate(df):
-    """Median + IQR over samples, per (experiment, x-parameter, algorithm). x = n (Exp 1) or alpha (Exp 2)."""
+    """Per (experiment, x-parameter, algorithm) summary over the samples. x = n (Exp 1) or alpha (Exp 2).
+    Each column in DIST_COLS gets median/q25/q75/mean/std; plus memory, weight spread, validity/convergence,
+    region-growing separation diagnostics, and status rates. Redundant-but-harmless: H and ref are per-task,
+    so they repeat across algos of the same MR variant (the plot layer just filters to one)."""
     df = df.copy()
     df["x"] = np.where(df["exp"] == "exp1", df["n"], df["alpha"])
     keys = ["exp", "model", "p", "x", "algo", "variant"]
     g = df.groupby(keys, dropna=False)
-    summ = g.agg(
-        n_samples=("sample", "nunique"),
-        size_med=("size", "median"), size_q25=("size", _q(.25)), size_q75=("size", _q(.75)),
-        ratio_med=("ratio", "median"), ratio_q25=("ratio", _q(.25)), ratio_q75=("ratio", _q(.75)),
-        ratio_domr_med=("ratio_domr", "median"), ratio_domr_q25=("ratio_domr", _q(.25)),
-        ratio_domr_q75=("ratio_domr", _q(.75)),
+
+    named = {"n_samples": ("sample", "nunique")}
+    for c in DIST_COLS:
+        named[f"{c}_med"] = (c, "median")
+        named[f"{c}_q25"] = (c, _q(.25))
+        named[f"{c}_q75"] = (c, _q(.75))
+        named[f"{c}_mean"] = (c, "mean")
+        named[f"{c}_std"] = (c, "std")
+    named.update(
+        peak_med=("peak_mb", "median"), peak_max=("peak_mb", "max"),
         w_max_med=("w_max", "median"), w_max_min=("w_max", "min"), w_max_max=("w_max", "max"),
-        cpu_med=("cpu", "median"), wall_med=("wall", "median"), peak_med=("peak_mb", "median"),
         valid_rate=("valid", "mean"),
         converged_rate=("converged", "mean"),
+        full_sep_rate=("full_separation", "mean"),           # region growing: fraction with full separation
+        min_pair_dist_med=("min_pair_dist", "median"),       # region growing: median LP heavy-pair distance
         ref_kind=("ref_kind", lambda s: s.mode().iat[0] if len(s.mode()) else None),
-    ).reset_index()
+    )
+    summ = g.agg(**named).reset_index()
     summ["timeout_rate"] = g["status"].apply(lambda s: (s == "timeout").mean()).values
     return summ.sort_values(keys).reset_index(drop=True)
 
