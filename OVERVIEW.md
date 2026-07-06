@@ -60,7 +60,7 @@ IOMR variant** (the IOMR one hits each broken cycle at a *light* edge — see th
 | `l1_min_heuristic(G, general=False/True)` → `l1_minimization(Kc)` | **IOMR** (default) / **GMR** | heuristic | **complete-only core** | yes | support of the L1 weight-correction LP (§3); `general=False` → `x ≥ 0` increase-only (IOMR), `general=True` → free-sign (GMR). |
 | `l1_rounding_heuristic(G, general=False/True)` | **IOMR** (default) / **GMR** | heuristic | general (+completion for LP) | yes (LP step) | randomized rounding of the L1 LP; the acceptance check matches the variant (`iomr_verifier` when `general=False`, else `verifier`). |
 | `l1_separation(G, general=False/True, complete_graph=False)` | **IOMR** (default) / **GMR** | heuristic | general | **no** | **cutting-plane L1** (§3): generates polygon rows on demand via shortest paths — no chordless-cycle enumeration. Default runs directly on `G` → **provably valid** cover (no restrict-to-`E(G)` step) and empirically **much sparser** than the completion L1 (e.g. IOMR 51 vs 79). |
-| `covering_lp_cover(G, solve=…, rounding=…, iomr=…, best_of_k=…)` | **GMR** / **IOMR** | **exact**/​**approx** | general | no | unified covering-LP cover (§6): `solve∈{enum,separation} × rounding∈{randomized,deterministic}` — all four combos. `broken_cycle_rounding_heuristic` and `threshold_rounding_cover` are two of its corners. `best_of_k>1` rounds several optimal-face vertices, keeping the smallest (closes the IOMR gap; see §6). |
+| `covering_lp_cover(G, solve=…, rounding=…, iomr=…, best_of_k=…)` | **GMR** / **IOMR** | **exact**/​**approx** | general | no | unified covering-LP cover (§6): `solve∈{enum,separation} × rounding∈{randomized,deterministic}` — all four combos, plus `rounding="region_growing"` (GVY, IOMR: `O(log n)` under full separation). `broken_cycle_rounding_heuristic` / `threshold_rounding_cover` are two corners. `best_of_k>1` rounds several optimal-face vertices, keeping the smallest (closes the IOMR gap; see §6). |
 | `metric_repair_lp_separation(G, iomr=False/True)` | **GMR** / **IOMR** | **bound** (not a cover) | general | no | cutting-plane covering LP (§6): returns a value + fractional `y`, *not* a cover. Exact optimum for GMR (LP integral); a valid **lower bound** for IOMR (LP has a gap). |
 
 **L1: two modes.** `general=False` (default) keeps the increase-oriented LP (`x ≥ 0` → weights only
@@ -243,7 +243,22 @@ makes the returned cover **always valid**; `info['guaranteed']` flags when a *pr
   `#cycles ≤ n^L`). `scale` defaults to `ln(#cycles)` under `enum` (known) and to `L·ln(n)` under
   `separation` (the `ln(n^L)` bound). Now works over **both** the enumerated matrix *and* the separation
   LP. The bound is whp/expected, so `info['guaranteed']` stays `False` (not certified per run).
-- Still open: primal–dual / region-growing with its own ratio; reweighted-L1 re-solving to sparsify.
+- **GVY region growing — IMPLEMENTED (`covering_lp_cover(rounding="region_growing")`, IOMR).** Garg–
+  Vazirani–Yannakakis region-growing multicut in `G` separating every heavy pair's *detours*
+  (`_region_growing_multicut`): grow an `x*`-ball around each source (direct heavy edge excluded), cut its
+  boundary at a radius `< ½` meeting the volume bound, delete the ball, recurse. **Under full separation**
+  — every pair's shortest `x*`-detour `≥ 1` (`info['full_separation']`, `info['min_pair_dist']`) — this is
+  a provable **`O(log|H|)=O(log n)`** approximation with **no `W` factor** (`guaranteed=True`).
+  ⚠ **Empirically full separation never holds** on the geometric IOMR instances: `min_pair_dist = 0` every
+  time, because the LP optimum leaves some *unbudgeted* detour at `x*=0` (it's unconstrained). So the
+  `O(log n)` route is **unreachable** here and region growing degenerates to the oracle top-up (still a
+  valid, competitive cover — it beat threshold on some instances — but no ratio). Verified the subroutine
+  is correct on a hand-built separable instance. Net: **this matches the theory** — for this weight regime
+  the deterministic `f`-rounding's unconditional `O(W)` is the better guaranteed option; region growing
+  only wins when full separation holds *and* `W` is large. (See the write-up's Remark 5.4 and [Baier et al.]
+  length-bounded-cut gap; and note `f = L−1 ≤ W−1`, so `f`-rounding already gives `O(W)` — dominating the
+  paper's unconditional `O(W log n)`, and `O(log n)` on the WRG model where `W=O(log n)`.)
+- Still open: primal–dual with its own ratio; reweighted-L1 re-solving to sparsify.
 
 **Reuse.** The `verifier` already implements a separation oracle for *integral* covers (it finds an
 undercut edge + detour = a violated broken cycle); generalising it to score a *fractional* `y` is the

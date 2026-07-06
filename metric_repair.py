@@ -29,6 +29,7 @@ tie-broken pieces match in *distribution*, not exactly:
 
 import numpy as np
 import networkx as nx
+import heapq
 from itertools import combinations
 from scipy import sparse
 from scipy.optimize import linprog, milp, LinearConstraint, Bounds
@@ -1155,11 +1156,9 @@ def _optimal_face_vertices(Bmat, m, opt, k, mode, seed, lp_solver, tol, y0):
     return verts
 
 
-def _threshold_round_topup(yv, f, check, m, tol):
-    """Round UP every edge with yv_e >= 1/f, then oracle-driven top-up to a valid cover. Returns
-    (cols, added). Tie-break in the top-up uses yv (the vertex being rounded)."""
-    thr = (1.0 / f) if f else 0.5
-    cols = set(np.nonzero(yv >= thr - tol)[0].tolist())
+def _topup(cols, check, yv, m):
+    """Oracle-driven feasibility top-up: while `check` reports a missed cut, add its most-fractional edge
+    (by yv). Returns (cols, added). Guarantees the returned cols is a valid cover."""
     added = 0
     for _ in range(m + 1):
         sol = np.zeros(m)
@@ -1174,6 +1173,86 @@ def _threshold_round_topup(yv, f, check, m, tol):
     return cols, added
 
 
+def _threshold_round_topup(yv, f, check, m, tol):
+    """Round UP every edge with yv_e >= 1/f, then top-up to a valid cover. Returns (cols, added)."""
+    thr = (1.0 / f) if f else 0.5
+    cols = set(np.nonzero(yv >= thr - tol)[0].tolist())
+    return _topup(cols, check, yv, m)
+
+
+def _heavy_pairs(G):
+    """H: heavy edges (u,v) with w0(u,v) > shortest-path distance (a strictly shorter detour exists) --
+    the terminal endpoints region growing must separate. (Exactly the DOMR broken edges.)"""
+    apsp = all_pairs_distances(G)
+    return [(u, v) for u, v, w in sorted_edges(G, weight=True) if float(w) > apsp[u][v] + 1e-9]
+
+
+def _region_growing_multicut(G, xvec, D, pairs, tol=1e-6):
+    """Garg-Vazirani-Yannakakis region-growing multicut, in G, over edge lengths x = xvec (indexed by D)
+    with unit edge costs. For each still-connected terminal pair (s,t): grow a ball around s under the
+    x-metric with the DIRECT edge (s,t) excluded (so we separate the DETOURS, not the heavy edge itself),
+    pick a radius < 1/2 meeting the GVY volume bound (cut(ball) <= 2 ln(k+1) * vol(ball), seed vol =
+    Fvol/k), cut its boundary, delete the ball, and continue. Returns (cut_cols, min_detour_dist,
+    full_separation): the multicut as a set of edge-columns, the smallest shortest-x-detour over the
+    pairs, and whether that minimum is >= 1 (the precondition). Under full_separation the total cut is
+    O(log|pairs|) * sum(x) = O(log n) * OPTfrac; otherwise a pair may go unseparated (the caller's top-up
+    then restores validity)."""
+    k = max(1, len(pairs))
+    Fvol = float(sum(xvec[D[e]] for e in sorted_edges(G)))
+    seed = Fvol / k
+    bnd = 2.0 * np.log(k + 1)
+    edges = list(sorted_edges(G))
+    alive = set(G.nodes())
+    cut, min_dist = set(), np.inf
+    INF = float("inf")
+    for (s, t) in pairs:
+        if s not in alive or t not in alive:
+            continue
+        dist = {s: 0.0}                                   # Dijkstra from s in `alive`, minus edge (s,t)
+        pq = [(0.0, s)]
+        while pq:
+            d, u = heapq.heappop(pq)
+            if d > dist.get(u, INF):
+                continue
+            for v in G.neighbors(u):
+                if v not in alive or {u, v} == {s, t}:
+                    continue
+                nd = d + xvec[D[_norm(u, v)]]
+                if nd < dist.get(v, INF):
+                    dist[v] = nd
+                    heapq.heappush(pq, (nd, v))
+        min_dist = min(min_dist, dist.get(t, INF))        # shortest x-detour s->t
+        levels = sorted({d for d in dist.values() if d < 0.5 - tol})
+        picked_boundary, best_boundary, best_bcount = None, None, None
+        for r in levels:
+            ball = {u for u, du in dist.items() if du <= r + tol}
+            if t in ball:                                 # ball would swallow t -> can't separate here
+                break
+            inside, bcount, boundary = 0.0, 0, set()
+            for (a, b) in edges:
+                if a not in alive or b not in alive or {a, b} == {s, t}:
+                    continue
+                ina, inb = a in ball, b in ball
+                if ina and inb:
+                    inside += xvec[D[(a, b)]]
+                elif ina or inb:
+                    bcount += 1
+                    boundary.add(D[(a, b)])
+            if best_bcount is None or bcount < best_bcount:
+                best_bcount, best_boundary, best_ball = bcount, boundary, ball
+            if bcount <= bnd * (seed + inside) + tol:     # GVY volume bound met -> use this radius
+                picked_boundary, picked_ball = boundary, ball
+                break
+        if picked_boundary is None:                       # no bound-satisfying radius: min-boundary cut
+            if best_boundary is None:
+                continue
+            picked_boundary, picked_ball = best_boundary, best_ball
+        cut |= picked_boundary
+        alive -= picked_ball                              # remove the ball; recurse on the rest
+    full_sep = bool(min_dist >= 1.0 - tol)
+    return cut, (0.0 if min_dist == INF else float(min_dist)), full_sep
+
+
 def covering_lp_cover(G, solve="separation", rounding="deterministic", iomr=False, oracle="rsp",
                       max_len=None, rounds=20, scale=None, best_of_k=1, vertex_mode="both",
                       seed=None, tol=1e-6, solver=None, verbose=False):
@@ -1182,8 +1261,8 @@ def covering_lp_cover(G, solve="separation", rounding="deterministic", iomr=Fals
         solve    = "enum" | "separation"           -- how  min 1.y s.t. By>=1  is built/solved
         rounding = "randomized" | "deterministic"  -- how the fractional optimum y is rounded to a cover
 
-    All four combinations are supported. iomr=True hits each broken cycle at a LIGHT edge (drop_max).
-    A shared oracle-driven top-up guarantees the returned cover is always valid. Returns (cover, info).
+    iomr=True hits each broken cycle at a LIGHT edge (drop_max). A shared oracle-driven top-up guarantees
+    the returned cover is always valid. Returns (cover, info).
 
     solve:
       "enum"       -- enumerate all (length-bounded) broken cycles, solve once. Exact relaxation but the
@@ -1197,6 +1276,14 @@ def covering_lp_cover(G, solve="separation", rounding="deterministic", iomr=Fals
       "randomized"    -- sample edge e w.p. min(1, scale*y_e), union over `rounds`; O(log*OPT) in
                       expectation with scale~ln(#constraints). scale defaults to ln(#cycles) for "enum"
                       and to L*ln(n) (an ln(n^L) bound on #cycles) for "separation".
+      "region_growing" -- (iomr only) Garg-Vazirani-Yannakakis region-growing multicut in G separating
+                      every heavy pair's DETOURS (_region_growing_multicut). When the LP optimum certifies
+                      FULL SEPARATION -- every pair's shortest y-detour >= 1 (info['full_separation'],
+                      info['min_pair_dist']) -- this is a provable O(log|H|) = O(log n) approximation with
+                      NO W factor, so info['guaranteed'] is True; otherwise a pair may go unseparated and
+                      the top-up restores validity (no ratio). NB: the trivial "deterministic" f-rounding
+                      already gives O(W) unconditionally, which dominates unless W is large AND full
+                      separation holds -- so region growing is the win exactly in that regime.
 
     best_of_k (deterministic only): when > 1, round several DISTINCT optimal vertices of the LP's optimal
     face (found by _optimal_face_vertices) and keep the smallest valid cover. Only helps when the optimum
@@ -1209,7 +1296,7 @@ def covering_lp_cover(G, solve="separation", rounding="deterministic", iomr=Fals
     such a winner is then not marked guaranteed.
 
     info keys: solve, rounding, iomr, lp_value, f, scale, best_of_k, vertices_tried, rounded (size before
-    top-up), added (top-up edges), size, guaranteed (True iff the deterministic f-bound provably holds)."""
+    top-up), added (top-up edges), size, guaranteed; region_growing adds full_separation, min_pair_dist."""
     lp_solver = solver or ("highs-ds" if solve == "separation" else "highs")
     y, D, check, ncon, Bmat = _covering_lp_fractional(
         G, solve, iomr, oracle, max_len, tol, lp_solver, verbose)
@@ -1249,29 +1336,34 @@ def covering_lp_cover(G, solve="separation", rounding="deterministic", iomr=Fals
             if not check(sol):
                 break
         rounded = len(cols)
-        added = 0                                        # feasibility top-up (valid cover always)
-        for _ in range(m + 1):
-            sol = np.zeros(m)
-            if cols:
-                sol[list(cols)] = 1.0
-            cuts = check(sol)
-            if not cuts:
-                break
-            for cut in cuts:
-                cols.add(max(cut, key=lambda c: y[c]))
-                added += 1
+        cols, added = _topup(cols, check, y, m)          # feasibility top-up (valid cover always)
+    elif rounding == "region_growing":                   # GVY region-growing multicut (IOMR only)
+        if not iomr:
+            raise ValueError("rounding='region_growing' is defined for iomr=True (light-edge covers)")
+        cut_cols, min_pair_dist, full_sep = _region_growing_multicut(G, y, D, _heavy_pairs(G), tol)
+        cols = set(cut_cols)
+        rounded = len(cols)
+        cols, added = _topup(cols, check, y, m)          # net for any pair region growing left unseparated
     else:
-        raise ValueError(f"rounding must be 'randomized' or 'deterministic', got {rounding!r}")
+        raise ValueError("rounding must be 'deterministic', 'randomized' or 'region_growing', "
+                         f"got {rounding!r}")
 
     if rounding == "deterministic" and f is not None and added == 0:
         guaranteed = (solve == "enum") or (oracle == "rsp" and _positive_integer_weights(G))
+    elif rounding == "region_growing":
+        guaranteed = bool(full_sep and added == 0)       # O(log|H|) bound holds only under full separation
     else:
         guaranteed = False                               # randomized bound is whp/expected, not certified
     S = {inv[c] for c in cols}
     info = {"solve": solve, "rounding": rounding, "iomr": iomr, "lp_value": lp_value, "f": f,
             "scale": used_scale, "best_of_k": best_of_k, "vertices_tried": vertices_tried,
             "rounded": rounded, "added": added, "size": len(S), "guaranteed": guaranteed}
+    if rounding == "region_growing":
+        info["full_separation"] = full_sep
+        info["min_pair_dist"] = min_pair_dist
     if verbose:
+        extra = (f" full_sep={full_sep} min_dist={min_pair_dist:.3f}"
+                 if rounding == "region_growing" else "")
         print(f"[cov-lp] solve={solve} round={rounding} lp={lp_value:.3f} f={f} tried={vertices_tried} "
-              f"rounded={rounded} added={added} size={len(S)} guaranteed={guaranteed}")
+              f"rounded={rounded} added={added} size={len(S)} guaranteed={guaranteed}{extra}")
     return S, info
