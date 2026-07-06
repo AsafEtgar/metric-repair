@@ -10,12 +10,12 @@ cd metric-repair/"Average Metric Repair Sage"      # (the code lives in this sub
 
 # a conda env with the deps -- the pure-Python port needs NO Sage on the cluster
 module load miniconda
-conda create -y -n metric-repair python=3.11 numpy scipy networkx
+conda create -y -n metricrepair python=3.11 numpy scipy networkx
 ```
 
 ## 1. Smoke-test ONE task first (always do this)
 ```bash
-module load miniconda && conda activate metric-repair
+module load miniconda && conda activate metricrepair
 python experiments/run_task.py --count                 # -> 3200
 python experiments/run_task.py --task-index 0 --outdir results   # runs one graph (n=100, p=0.3)
 head -3 results/task_000000.csv                        # sanity-check the columns/values
@@ -24,11 +24,15 @@ If that produces a CSV with 18 rows and `valid=1` on the cover rows, the pipelin
 
 ## 2. Build the joblist + dSQ batch script (does NOT submit)
 ```bash
-bash experiments/submit_dsq.sh metric-repair <your_netid>
+bash experiments/submit_dsq.sh metricrepair <your_netid>
 # -> writes joblist.txt (3200 lines) and dsq_submit.sh
 ```
 `submit_dsq.sh` sets: `day` partition, `-A pi_<netid>`, 1 core + 1 GB per task, `--time 02:30:00`,
 **`--max-jobs 64`** (64 concurrent cores). Edit `MAXJOBS` at the top of the script to change it.
+Each joblist line is prefixed with `module load miniconda && conda activate <env>` so every task
+self-activates on the compute node — dSQ runs each line in a bare shell that does **not** inherit your
+login-shell env, so a plain `python` there would be system Python (no numpy) and fail instantly. Sanity-check:
+`head -1 joblist.txt` should start with `module load miniconda && conda activate metricrepair && python …`.
 
 ## 3. Submit and monitor
 ```bash

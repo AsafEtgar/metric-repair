@@ -7,7 +7,7 @@
 # Prereqs: a conda env with numpy/scipy/networkx (the pure-Python port needs no Sage on the cluster).
 set -euo pipefail
 
-ENV="${1:-metric-repair}"          # conda env name
+ENV="${1:-metricrepair}"           # conda env name
 NETID="${2:-CHANGE_ME}"            # your netid, for -A pi_<netid>
 MAXJOBS=64                         # concurrent tasks (cores); well under the day-partition cap (1024)
 OUTDIR=results
@@ -19,7 +19,10 @@ mkdir -p "$OUTDIR" logs
 NTASKS=$(python experiments/run_task.py --count)
 echo "tasks: $NTASKS"
 
-python experiments/make_joblist.py --python python --outdir "$OUTDIR" --joblist joblist.txt
+# --setup bakes env activation into EVERY task line: dSQ runs each line in a bare shell that does NOT
+# inherit this login-shell env, so a plain `python` there is system Python (no numpy) -> instant failure.
+python experiments/make_joblist.py --python python --outdir "$OUTDIR" --joblist joblist.txt \
+    --setup "module load miniconda && conda activate $ENV"
 
 # dSQ turns joblist.txt into an array batch script; --max-jobs throttles concurrency to $MAXJOBS.
 # --time is PER TASK (one graph = the whole 19-algorithm suite); the harness caps each algorithm at 30 min
