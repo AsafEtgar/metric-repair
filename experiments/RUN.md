@@ -20,7 +20,7 @@ python experiments/run_task.py --count                 # -> 3200
 python experiments/run_task.py --task-index 0 --outdir results   # runs one graph (n=100, p=0.3)
 head -3 results/task_000000.csv                        # sanity-check the columns/values
 ```
-If that produces a CSV with ~19 rows and `valid=1` on the cover rows, the pipeline works.
+If that produces a CSV with 18 rows and `valid=1` on the cover rows, the pipeline works.
 
 ## 2. Build the joblist + dSQ batch script (does NOT submit)
 ```bash

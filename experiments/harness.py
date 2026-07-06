@@ -29,7 +29,7 @@ from graph_models import (                                              # noqa: 
 )
 from metric_repair import (                                            # noqa: E402
     domr_alg, exact_metric_repair_ilp_separation, metric_repair_lp_separation, covering_lp_cover,
-    l1_separation, shortest_path_cover, pivot_heuristic, left_edge_heuristic, l1_min_heuristic,
+    l1_separation, shortest_path_cover, pivot_heuristic, left_edge_heuristic,
     verifier, iomr_verifier,
 )
 
@@ -144,7 +144,6 @@ def build_suite(seed):
         ("spc_iomr",       "IOMR", "iomr", None, False, lambda CC: (shortest_path_cover(CC, general=False), {})),
         ("pivot",          "GMR",  "gmr",  None, False, lambda CC: (pivot_heuristic(CC), {})),
         ("left_edge",      "IOMR", "iomr", None, False, lambda CC: (left_edge_heuristic(CC), {})),
-        ("l1min",          "IOMR", "iomr", 120,  False, lambda CC: (l1_min_heuristic(CC, general=False), {})),
     ]
 
 

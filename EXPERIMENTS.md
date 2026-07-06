@@ -62,7 +62,7 @@ We use two geometric variants:
 
 ---
 
-## 4. Algorithm suite (19 variants)
+## 4. Algorithm suite (18 variants)
 
 Run **per connected component** (results aggregated, §7). `n≤k` = runs only when the giant component has
 `≤ k` vertices; `|H|≤200` = runs only when the total broken-edge count is small.
@@ -87,14 +87,12 @@ Run **per connected component** (results aggregated, §7). `n≤k` = runs only w
 | `spc_iomr` | IOMR | shortest-path cover | — | — |
 | `pivot` | GMR | MVD pivot (completion) | — | — |
 | `left_edge` | IOMR | Gilbert–Jain (completion) | — | — |
-| `l1min` | IOMR | L1 on the completion | — | **n≤120** |
 
 **Reference optimum for the ratio:** exact OPT from `gmr_ilp` / `iomr_ilp` when `converged`, else the
 tightest LP lower bound (`*_lp_rsp` where available, else `*_lp_naive`).
 
 **Gates rationale:** `iomr_lp_rsp`/`iomr_thr_rsp` — the rsp IOMR LP does not converge past ~n=150 (the
-integrality gap forces many rounds); `l1min` — the completion L1 is an `O(n³)` constraint LP; `region
-growing` — its multicut is `O(V·E)` per heavy pair.
+integrality gap forces many rounds); `region growing` — its multicut is `O(V·E)` per heavy pair.
 
 ---
 
@@ -115,9 +113,9 @@ Lower-bound rows (`gmr_lp_naive`, `iomr_lp_*`) have empty `size`/`valid` and rep
 - **Time:** 30 min per (algorithm, instance) [`TIMEOUT_S`, fork-enforced]; 120 min per task [`TASK_BUDGET_S`;
   later algorithms marked `skipped_time`]. SLURM `--time 02:30:00`, references run first so they're never
   starved.
-- **Memory:** 1 GB per task (`--mem-per-cpu 1g`). Real peak ≈ 16–90 MB; only `l1min` (n≤120) approaches a
-  few hundred MB. `peak_mb` recorded per algorithm. Single-threaded BLAS (`OMP_NUM_THREADS=1`) — fork-safe,
-  deterministic timing.
+- **Memory:** 1 GB per task (`--mem-per-cpu 1g`) — heavily over-provisioned; real peak ≈ 16–90 MB.
+  `peak_mb` recorded per algorithm. Single-threaded BLAS (`OMP_NUM_THREADS=1`) — fork-safe, deterministic
+  timing.
 - **Concurrency:** 48 tasks (`--max-jobs 48`), Bouchet `day` partition. Estimated wall-clock ≈ 4–8 h (the
   spread is the exact IOMR sep-ILP at n=500, which is unmeasured; it's cap-bounded at 30 min/algorithm).
 
