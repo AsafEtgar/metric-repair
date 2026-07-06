@@ -112,22 +112,49 @@ conditional case, or reconsider whether the WRG headline should be `O(log n)` vi
 
 ---
 
-## 5. Open items / next steps
+## 5. Backlog — task cards (pick up any of these)
 
-**Theory (see §2 for the full guarantee list):**
-- Write the `f`-rounding `O(W)` proof (easy; beats the paper). [📝]
-- Prove a ratio for **randomized-rounding + top-up** as implemented. [❓, tractable]
-- **GMR LP integrality** characterization on geometric G(n,p). [❓, high value]
-- Confirm/port ratios for `shortest_path_cover` (L+1), `pivot`, `left_edge`. [❓]
-- Primal–dual / region-growing scheme *with a usable ratio* (the paper's is vacuous here). [open]
+Four prioritized cards below, each self-contained enough to resume cold. (Next up per the plan: **design
+the experiment starting point** — the harness/config that these baselines and heuristics get run through.)
 
-**Empirical / engineering:**
-- **Timing probe** for the two ⚠ rows (exact IOMR ILP, `l1_separation`) at p=0.3 and p=0.5, 1-hr cap, to
-  firm up the cluster table.
-- The **n≈1000 exact baseline** run (GMR is feasible; exact IOMR needs the ILP without a cap, or accept the
-  naive LB) on the real ~1000-vertex datasets via `datasets.py`.
-- `l1_separation` is sparser + validity-proven on G — consider making it the default L1 in experiments.
-- Reweighted-L1 re-solve to sparsify (deferred).
+### A. Timing probe — firm up the cluster table  [empirical, ~30–60 min compute]
+- **Goal:** replace the two ⚠ estimates in §3 (`exact_metric_repair_ilp_separation(iomr=True)` and
+  `l1_separation`) with measured numbers.
+- **Do:** run each at a size ladder bracketing the cliff (e.g. n ∈ {100,200,300,500}), at **p=0.3 and
+  p=0.5**, per-run timeout ~10–15 min (enough to fit the curve and extrapolate to 1 hr). Log n, p, |E|,
+  wmax, seconds, cover size / converged.
+- **Done when:** §3 rows for those two algorithms are measured, not est., and OVERVIEW/STATUS updated.
+
+### B. Draft the `f`-rounding proof  [theory, 📝 easy win]
+- **Goal:** a written proof that deterministic threshold rounding is an `O(W)`-approximation, dominating
+  the paper's unconditional `O(W log n)`.
+- **Do:** bounded-frequency hitting-set argument — the covering LP has row-sparsity `f = max|P| ≤ W−1`
+  (IOMR: `L−1`; GMR: `L`); rounding up `y*_e ≥ 1/f` hits every constraint and gives `|S| ≤ f·OPTfrac ≤ f·OPT`.
+  State the exactness precondition (needs rsp LP so `y*` is feasible for all cycles). Note the WRG corollary
+  (`W=O(log n) ⇒ O(log n)` unconditional, beating the paper's `O(log² n)`).
+- **Done when:** a short LaTeX/markdown proof exists; slots into the paper as the baseline that re-scopes §5.
+
+### C. Randomized-rounding + top-up ratio  [theory, ❓ tractable]
+- **Goal:** a real guarantee for the *implemented* scheme (K union-rounds of `min(1, scale·y_e)` sampling +
+  greedy oracle top-up), not just the textbook single-shot `O(log N)`.
+- **Do:** analyze failure probability of the union over rounds with `scale = ln(#constraints)`, and bound
+  the extra edges the top-up adds (it fires only on cycles missed by all rounds — bound their expected
+  count). Target: `O(log N_bc)·OPTfrac` w.h.p. with the top-up not breaking it, or the honest weaker bound.
+- **Done when:** a ratio + failure-probability statement for the code as written.
+
+### D. GMR LP integrality characterization  [theory, ❓ high value]
+- **Goal:** explain the observed **zero integrality gap** of the GMR broken-cycle covering LP on all
+  geometric instances — which *cannot* be universal (GMR is NP-hard).
+- **Do:** look for structure making the covering polytope integral on the instance class (balancedness /
+  TU-like conditions on the cycle-edge incidence, or an uncrossing/primal-dual argument); test whether
+  geometric G(n,p) provably satisfies it; hunt for the smallest fractional GMR instance as the boundary.
+- **Done when:** either a proof that geometric ⇒ integral (⇒ poly-time exact GMR there), or a
+  counterexample + a characterization of when it holds.
+
+**Secondary / deferred:** confirm-or-port ratios for `shortest_path_cover` (L+1 claim, both variants),
+`pivot`, `left_edge`; a primal–dual scheme with a *usable* ratio (the paper's region-growing one is vacuous
+here — §4); the **n≈1000 exact baseline** on real datasets via `datasets.py` (GMR feasible; exact IOMR needs
+the ILP uncapped or the naive LB); make `l1_separation` the default L1; reweighted-L1 re-solve to sparsify.
 
 **Resolved this session:** IOMR variants across all exact routines; the 2×2 `covering_lp_cover` grid +
 multi-vertex; `l1_separation`; `l1(general=True)` now keeps `w+x` strictly positive (`min_weight=1`);
