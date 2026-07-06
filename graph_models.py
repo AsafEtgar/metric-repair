@@ -102,9 +102,24 @@ def random_weighted_graph(n, p, lower_weight=1, upper_weight=100):
 
 
 def random_geometric_weighted_graph(n, p):
-    """G(n, p) with i.i.d. Geometric(1 - p) edge weights."""
+    """G(n, p) with i.i.d. Geometric(1 - p) edge weights.
+
+    NOTE the coupling: the weight parameter is 1 - p, so as p -> 0 the weights collapse to 1 and the
+    graph becomes metric (non-metricity requires alpha < 3/5 when p = n^-alpha). Use this for FIXED-p
+    experiments; for a p-sweep use random_decoupled_geometric_weighted_graph (weights fixed)."""
     edges = _gnp_edges(n, p)
     weights = np.random.geometric(1 - p, len(edges))
+    return _weighted_graph(edges, weights)
+
+
+def random_decoupled_geometric_weighted_graph(n, p, weight_p=0.5):
+    """G(n, p) with i.i.d. Geometric(1 - weight_p) edge weights -- the weight distribution is FIXED,
+    DECOUPLED from the edge probability p. Unlike random_geometric_weighted_graph (whose weight parameter
+    tracks p, so the graph turns metric as p -> 0), this keeps a fixed weight spread at every density, so
+    it stays non-metric across a p = n^-alpha sweep. weight_p=0.5 matches the coupled model 'as if p=0.5'
+    (mean weight 2, w_max ~ log|E|)."""
+    edges = _gnp_edges(n, p)
+    weights = np.random.geometric(1 - weight_p, len(edges))
     return _weighted_graph(edges, weights)
 
 
