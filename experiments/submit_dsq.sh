@@ -9,7 +9,7 @@ set -euo pipefail
 
 ENV="${1:-metric-repair}"          # conda env name
 NETID="${2:-CHANGE_ME}"            # your netid, for -A pi_<netid>
-MAXJOBS=48                         # concurrent tasks (cores) -- you asked for 48
+MAXJOBS=64                         # concurrent tasks (cores); well under the day-partition cap (1024)
 OUTDIR=results
 
 module load miniconda dSQ 2>/dev/null || echo "note: 'module load miniconda dSQ' failed -- load them yourself"

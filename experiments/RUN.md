@@ -28,7 +28,7 @@ bash experiments/submit_dsq.sh metric-repair <your_netid>
 # -> writes joblist.txt (3200 lines) and dsq_submit.sh
 ```
 `submit_dsq.sh` sets: `day` partition, `-A pi_<netid>`, 1 core + 1 GB per task, `--time 02:30:00`,
-**`--max-jobs 48`** (48 concurrent = your core cap). Edit the top of the script to change any of these.
+**`--max-jobs 64`** (64 concurrent cores). Edit `MAXJOBS` at the top of the script to change it.
 
 ## 3. Submit and monitor
 ```bash
@@ -37,7 +37,7 @@ squeue --me                                            # queue / running
 dSQAutopsy dsq_submit.sh joblist.txt                   # which tasks succeeded / failed / are pending
 cat logs/dsq-*_*.out | tail                            # task stdout (one file per task)
 ```
-Estimated wall-clock ≈ **4–8 h** on 48 cores. Each task writes `results/task_<index>.csv`; failed/rerun
+Estimated wall-clock ≈ **3–6 h** on 64 cores. Each task writes `results/task_<index>.csv`; failed/rerun
 tasks just overwrite their own file.
 
 ## 4. Collect into one table

@@ -116,8 +116,9 @@ Lower-bound rows (`gmr_lp_naive`, `iomr_lp_*`) have empty `size`/`valid` and rep
 - **Memory:** 1 GB per task (`--mem-per-cpu 1g`) — heavily over-provisioned; real peak ≈ 16–90 MB.
   `peak_mb` recorded per algorithm. Single-threaded BLAS (`OMP_NUM_THREADS=1`) — fork-safe, deterministic
   timing.
-- **Concurrency:** 48 tasks (`--max-jobs 48`), Bouchet `day` partition. Estimated wall-clock ≈ 4–8 h (the
-  spread is the exact IOMR sep-ILP at n=500, which is unmeasured; it's cap-bounded at 30 min/algorithm).
+- **Concurrency:** 64 tasks (`--max-jobs 64`), Bouchet `day` partition (well under its 1024-core cap).
+  Estimated wall-clock ≈ 3–6 h (the spread is the exact IOMR sep-ILP at n=500, which is unmeasured; it's
+  cap-bounded at 30 min/algorithm).
 
 ---
 
