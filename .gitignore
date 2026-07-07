@@ -41,6 +41,13 @@ dsq_rgg_submit.sh
 dsq_rgg_*_submit.sh
 results_rgg*_all.csv
 
+# --- Real-dataset experiment output + cluster artifacts (regenerable; submit_real_dsq.sh) ---
+results_real/
+results_real_covers/
+real_*_joblist.txt
+dsq_real_*_submit.sh
+results_real_all.csv
+
 # --- Analysis output (regenerable from results by experiments/analyze.py) ---
 analysis/
 

@@ -154,6 +154,14 @@ def build_suite(seed):
         ("gmr_lp_rsp",     "GMR",  "gmr",  None, False, lambda CC: _lp(CC, False, "rsp")),
         ("gmr_lp_naive",   "GMR",  "gmr",  None, False, lambda CC: _lp(CC, False, "naive")),
         ("gmr_ilp",        "GMR",  "gmr",  None, False, lambda CC: _exact(CC, False)),
+        # GMR analogues of the covering-LP rounding family (iomr=False). No gmr_thr_rsp (the rsp GMR LP is
+        # already integral -> thresholding is trivial/redundant with gmr_lp_rsp) and no gmr_regiongrow
+        # (region growing is an IOMR light-edge construction). Useful on FLOAT data where rsp is dropped, so
+        # gmr_lp_rsp's exact integral cover is unavailable and these give fast valid GMR covers.
+        ("gmr_thr_naive",  "GMR",  "gmr",  None, False, lambda CC: _cov(CC, "deterministic", False, "naive")),
+        ("gmr_bestofk",    "GMR",  "gmr",  None, False,
+         lambda CC: _cov(CC, "deterministic", False, "naive", seed=seed, best_of_k=BEST_OF_K)),
+        ("gmr_rand",       "GMR",  "gmr",  None, False, lambda CC: _cov(CC, "randomized", False, "naive", seed=seed)),
         ("iomr_ilp",       "IOMR", "iomr", None, False, lambda CC: _exact(CC, True)),
         ("iomr_lp_naive",  "IOMR", "none", None, False, lambda CC: _lp(CC, True, "naive")),
         ("iomr_lp_rsp",    "IOMR", "none", 150,  False, lambda CC: _lp(CC, True, "rsp")),
