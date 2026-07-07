@@ -45,8 +45,16 @@ def check(df):
 
     print("\nstatus counts:")
     print(df["status"].value_counts().to_string())
-    hard = df[df["status"].str.startswith(("timeout", "oom", "killed", "error"), na=False)]
-    print(f"\nHARD-fail rows (timeout/oom/killed/error): {len(hard)}")
+    bad = df[df["status"].str.startswith(("timeout", "oom", "killed", "error"), na=False)]
+    # The two exact ILPs are capped at 45s and EXPECTED to time out at large n -- that just triggers the LP
+    # lower-bound fallback for the reference, so it's not a failure. Everything else (oom/killed/error, or a
+    # timeout in any other algo) is a genuine hard problem.
+    is_ilp_to = bad["status"].str.startswith("timeout", na=False) & bad["algo"].isin(["iomr_ilp", "gmr_ilp"])
+    expected, hard = bad[is_ilp_to], bad[~is_ilp_to]
+    print(f"\nexpected ILP timeouts (iomr_ilp/gmr_ilp -> LP-bound fallback, benign): {len(expected)}")
+    if len(expected):
+        print(expected.groupby("algo").size().to_string())
+    print(f"\nHARD-fail rows (oom/killed/error, or timeout in any other algo): {len(hard)}")
     if len(hard):
         print(hard.groupby(["algo", "status"]).size().to_string())
         problems += len(hard)
