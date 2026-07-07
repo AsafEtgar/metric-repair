@@ -38,10 +38,13 @@ from metric_repair import (                                            # noqa: E
 # ----------------------------------------------------------------------------
 N_SAMPLES = 40
 TIMEOUT_S = 30 * 60          # per (algorithm, instance) wall-clock cap
-# Per-algorithm overrides. iomr_ilp (exact IOMR hitting set) is NP-hard and slow once OPT is large -- it
-# ran >10 min at n=100. Cap it at 3 min so it stays EXACT on small-OPT instances (Exp 2a onset, Exp 2b
-# sparse), reports converged=False (no exact_opt) on the rest, and never dominates the budget.
-ALGO_TIMEOUT = {"iomr_ilp": 3 * 60}
+# Per-algorithm overrides. Both exact ILP-separation solvers are NP-hard and blow up at large n/OPT.
+# Cap each at 45s: they stay EXACT wherever they converge quickly (small n, sparse) and report
+# converged=False (no exact_opt) otherwise -- the analysis then falls back to the LP LOWER BOUND for that
+# MR variant (rgg_analyze/analyze _task_refs), so a timeout never leaves a config without a reference. This
+# bounds the runtime tail (iomr_ilp was ~93% of the RGG poc compute at the old 180s cap). NB: shared by the
+# geometric harness too, where GMR still recovers its exact optimum from the integral gmr_lp_rsp on timeout.
+ALGO_TIMEOUT = {"iomr_ilp": 45, "gmr_ilp": 45}
 TASK_BUDGET_S = 120 * 60     # per-task (all algorithms on one graph) budget; later algos -> skipped_time
                              # so a slow graph can't blow the SLURM per-task limit and lose the whole CSV.
 REGION_H_MAX = 200           # region growing only when total broken-edge count |H| is small (it's O(V*E)/pair)
@@ -118,8 +121,8 @@ def generate(pt, seed):
 # ----------------------------------------------------------------------------
 
 def _lp(CC, iomr, oracle):
-    val, y, D, ncuts = metric_repair_lp_separation(CC, iomr=iomr, oracle=oracle)
-    info = {"lp_bound": float(val), "oracle": oracle, "cuts": int(ncuts)}
+    val, y, D, ncuts, nrounds = metric_repair_lp_separation(CC, iomr=iomr, oracle=oracle, return_rounds=True)
+    info = {"lp_bound": float(val), "oracle": oracle, "cuts": int(ncuts), "rounds": int(nrounds)}
     # Only the EXACT (rsp) GMR LP is feasible for all cycles AND integral, so only its support is a valid
     # cover. The naive GMR LP (canonical cycles only) and the IOMR LP (fractional) are LOWER BOUNDS only.
     if (not iomr) and oracle == "rsp":
@@ -139,6 +142,7 @@ def _cov(CC, rounding, iomr, oracle, seed=None, best_of_k=1):
     cover, info = covering_lp_cover(CC, solve="separation", rounding=rounding, iomr=iomr,
                                     oracle=oracle, seed=seed, best_of_k=best_of_k)
     return cover, {"lp_bound": info.get("lp_value"), "oracle": oracle, "guaranteed": info.get("guaranteed"),
+                   "rounds": info.get("rounds"),        # separation-oracle rounds (None for solve="enum")
                    "full_separation": info.get("full_separation"), "min_pair_dist": info.get("min_pair_dist")}
 
 

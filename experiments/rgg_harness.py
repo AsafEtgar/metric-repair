@@ -46,16 +46,20 @@ def _radius(deg, n):
     return math.sqrt(deg / (math.pi * n))
 
 
+# baseline n=300 for the OFAT (non-size) sweeps; the size sweeps span n=100..500 (step 20) on their own.
 def _base_p1():
-    return dict(part="p1", mode="radius", n=500, deg=12, k=None, dim=2,
+    return dict(part="p1", mode="radius", n=300, deg=12, k=None, dim=2,
                 break_type="reweight", direction="inflate", frac_q=0.10, magnitude=3.0,
                 n_jitter=4, jitter_r=1.5, subset_s=0.5)
 
 
 def _base_p2():
-    return dict(part="p2", mode="radius", n=500, deg=12, k=None, dim=2,
+    return dict(part="p2", mode="radius", n=300, deg=12, k=None, dim=2,
                 break_type="jitter", direction=None, frac_q=None, magnitude=None,
                 n_jitter=8, jitter_r=2.0, subset_s=0.5)
+
+
+SIZE_NS = tuple(range(100, 501, 20))                       # size sweep: n=100..500 step 20 (21 points)
 
 
 def _points_part1():
@@ -64,7 +68,7 @@ def _points_part1():
     def add(sweep, base=_base_p1, **over):
         c = base(); c.update(over); c["sweep"] = sweep; pts.append(c)
 
-    for n in (100, 200, 300, 500, 800):                       # S1 size (density fixed via deg=12)
+    for n in SIZE_NS:                                         # S1 size sweep (inflate; density fixed deg=12)
         add("S1", n=n)
     for deg in (4, 8, 12, 20, 30, 40):                        # S2 density (radius)
         add("S2", deg=deg)
@@ -96,6 +100,8 @@ def _points_part2():
     def add(sweep, **over):
         c = _base_p2(); c.update(over); c["sweep"] = sweep; pts.append(c)
 
+    for n in SIZE_NS:                                         # size sweep under jitter (kNN recovery vs n)
+        add("P2size", n=n)
     for sfrac in (0.1, 0.25, 0.5, 0.75, 0.9):                 # subset_s sweep
         add("P2s", subset_s=sfrac)
     for jr in (0.5, 1.0, 2.0, 3.0, 4.0):                      # jitter magnitude sweep

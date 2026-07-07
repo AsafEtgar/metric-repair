@@ -71,8 +71,9 @@ def check(df):
     # samples per config (one row-family per sample: use domr)
     key = df[df["algo"] == "domr"]
     spc = key.groupby(CONFIG_KEYS, dropna=False)["sample"].nunique()
-    print(f"\nsamples/config: min={spc.min()} max={spc.max()} (target 40); "
-          f"{(spc < 40).sum()} configs under 40 (nonzero is fine only if the array is still running)")
+    tgt = int(spc.max()) if len(spc) else 0                # infer target from the fullest config (30 poc/40 full)
+    print(f"\nsamples/config: min={spc.min()} max={spc.max()} (target {tgt}); "
+          f"{(spc < tgt).sum()} configs under target (nonzero is fine only if the array is still running)")
 
     # Part 2 kNN coverage
     p2 = df[df["part"] == "p2"]

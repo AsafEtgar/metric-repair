@@ -942,13 +942,15 @@ def _rsp_separation(G, yvec, D, tol=1e-6, max_cuts=None, iomr=False):
 
 
 def metric_repair_lp_separation(G, max_rounds=200, tol=1e-6, solver="highs-ds", oracle="rsp",
-                                iomr=False, verbose=False, return_rows=False):
+                                iomr=False, verbose=False, return_rows=False, return_rounds=False):
     """Cutting-plane LP lower bound on the minimum metric-repair cover, via a separation oracle.
 
     Solves  min 1.y  s.t. (added broken-cycle constraints) y >= 1, 0 <= y <= 1, adding only violated
-    cycles until the oracle finds none. Returns (lp_value, y, D, n_cuts) -- or (..., n_cuts, rows) when
-    return_rows=True, where `rows` is the accumulated list of cut column-sets (the constraint matrix, for
-    re-optimising over the same polytope). `lp_value` is a valid LOWER BOUND on the exact cover size
+    cycles until the oracle finds none. Returns (lp_value, y, D, n_cuts); return_rows=True appends `rows`
+    (the accumulated cut column-sets = the constraint matrix, for re-optimising over the same polytope) and
+    return_rounds=True appends `n_rounds` (separation rounds run, the last of which found no new cut -- the
+    same iteration-count convention as exact_metric_repair_ilp_separation). The optional returns append in
+    that order, so the tuple is (lp_value, y, D, n_cuts[, rows][, n_rounds]). `lp_value` is a valid LOWER BOUND on the exact cover size
     (hence on every heuristic's cover size), and it never enumerates all cycles, so it scales to large n.
     Only the active edges (those in some cut) enter the LP, and the default dual-simplex solver returns a
     vertex -- so when the polytope is integral the returned y is integral and `lp_value` IS the exact
@@ -970,6 +972,7 @@ def metric_repair_lp_separation(G, max_rounds=200, tol=1e-6, solver="highs-ds", 
     y = np.zeros(m)
     val = 0.0
     use_rsp = (oracle == "rsp")
+    r = -1                                               # so n_rounds = 0 if the loop never runs (max_rounds=0)
     for r in range(max_rounds):
         cuts = _rsp_separation(G, y, D, tol=tol, iomr=iomr) if use_rsp else None
         if cuts is None:                                 # non-integer weights -> fall back to naive
@@ -990,9 +993,12 @@ def metric_repair_lp_separation(G, max_rounds=200, tol=1e-6, solver="highs-ds", 
         if verbose:
             print(f"[lp-sep] round {r}: {len(rows)} cuts, {ma} active vars, lp={val:.4f}  "
                   f"({'rsp' if use_rsp else 'naive'})")
+    out = [val, y, D, len(rows)]
     if return_rows:
-        return val, y, D, len(rows), rows
-    return val, y, D, len(rows)
+        out.append(rows)
+    if return_rounds:
+        out.append(r + 1)                                # rounds run (incl. the final no-new-cut check)
+    return tuple(out)
 
 
 def exact_metric_repair_ilp_separation(G, max_rounds=500, time_limit=None, tol=1e-6, iomr=False,
@@ -1099,24 +1105,25 @@ def _covering_lp_fractional(G, solve, iomr, oracle, max_len, tol, lp_solver, ver
     uses the exact integral oracle for `check`."""
     m = G.number_of_edges()
     if solve == "separation":
-        _, y, D, _, rows = metric_repair_lp_separation(
-            G, oracle=oracle, iomr=iomr, tol=tol, solver=lp_solver, verbose=verbose, return_rows=True)
+        _, y, D, _, rows, nrounds = metric_repair_lp_separation(
+            G, oracle=oracle, iomr=iomr, tol=tol, solver=lp_solver, verbose=verbose,
+            return_rows=True, return_rounds=True)
         Bmat = _cuts_to_matrix(rows, m) if rows else sparse.csr_matrix((0, m))
 
         def check(sol):
             return _violated_cuts(G, sol, D, integral=True, tol=tol, iomr=iomr)
-        return y, D, check, None, Bmat
-    # enumeration
+        return y, D, check, None, Bmat, nrounds
+    # enumeration: no separation loop, so n_rounds is undefined (None)
     B, n_cyc, D = broken_cycle_incidence(G, max_len, drop_max=iomr)
     if n_cyc == 0:
-        return np.zeros(m), D, (lambda sol: []), 0, sparse.csr_matrix((0, m))
+        return np.zeros(m), D, (lambda sol: []), 0, sparse.csr_matrix((0, m)), None
     y = linprog(np.ones(m), A_ub=-B, b_ub=-np.ones(n_cyc), bounds=(0, 1), method=lp_solver).x
     Bcsr = B.tocsr()
 
     def check(sol):
         hit = np.asarray(Bcsr @ np.asarray(sol)).ravel()
         return [frozenset(Bcsr.getrow(c).indices.tolist()) for c in np.nonzero(hit < 0.5)[0]]
-    return y, D, check, n_cyc, Bcsr
+    return y, D, check, n_cyc, Bcsr, None
 
 
 def _optimal_face_vertices(Bmat, m, opt, k, mode, seed, lp_solver, tol, y0):
@@ -1296,9 +1303,10 @@ def covering_lp_cover(G, solve="separation", rounding="deterministic", iomr=Fals
     such a winner is then not marked guaranteed.
 
     info keys: solve, rounding, iomr, lp_value, f, scale, best_of_k, vertices_tried, rounded (size before
-    top-up), added (top-up edges), size, guaranteed; region_growing adds full_separation, min_pair_dist."""
+    top-up), added (top-up edges), size, guaranteed, rounds (separation-oracle rounds, None for solve="enum");
+    region_growing adds full_separation, min_pair_dist."""
     lp_solver = solver or ("highs-ds" if solve == "separation" else "highs")
-    y, D, check, ncon, Bmat = _covering_lp_fractional(
+    y, D, check, ncon, Bmat, nrounds = _covering_lp_fractional(
         G, solve, iomr, oracle, max_len, tol, lp_solver, verbose)
     inv = {i: e for e, i in D.items()}
     m = len(inv)
@@ -1357,7 +1365,8 @@ def covering_lp_cover(G, solve="separation", rounding="deterministic", iomr=Fals
     S = {inv[c] for c in cols}
     info = {"solve": solve, "rounding": rounding, "iomr": iomr, "lp_value": lp_value, "f": f,
             "scale": used_scale, "best_of_k": best_of_k, "vertices_tried": vertices_tried,
-            "rounded": rounded, "added": added, "size": len(S), "guaranteed": guaranteed}
+            "rounded": rounded, "added": added, "size": len(S), "guaranteed": guaranteed,
+            "rounds": nrounds}                           # separation-oracle rounds (None for solve="enum")
     if rounding == "region_growing":
         info["full_separation"] = full_sep
         info["min_pair_dist"] = min_pair_dist

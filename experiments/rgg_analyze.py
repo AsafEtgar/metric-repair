@@ -37,7 +37,7 @@ NUM = ("size", "valid", "lp_bound", "exact_opt", "rounds", "cuts", "cpu", "wall"
 
 # each OFAT sweep varies exactly one knob -> that's its x-axis; S6 additionally varies frac_q (a 2nd series).
 SWEEP_X = {
-    "S1": "n", "POCsize_inflate": "n", "POCsize_jitter": "n",
+    "S1": "n", "P2size": "n", "POCsize_inflate": "n", "POCsize_jitter": "n",
     "S2": "deg", "S2k": "k",
     "S3": "magnitude", "S3d": "magnitude", "S6": "magnitude",
     "S4i": "frac_q", "S4d": "frac_q",
@@ -48,7 +48,7 @@ SWEEP_X = {
 SWEEP_SERIES = {"S6": "frac_q"}                 # 2D sweep: keep the secondary knob as a line series
 
 GMR_REF_VARIANTS = {"GMR", "DOMR"}              # DOMR covers are valid GMR covers -> compare to the GMR OPT
-DIST_EDIT = ["edit_precision", "edit_recall", "size", "ratio", "ratio_domr", "cpu", "wall"]
+DIST_EDIT = ["edit_precision", "edit_recall", "size", "ratio", "ratio_domr", "cpu", "wall", "rounds", "cuts"]
 DIST_KNN = ["jaccard_TC", "jaccard_TF", "recall_TF", "lift", "triplet_acc_C", "triplet_acc_F"]
 
 

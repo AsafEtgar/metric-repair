@@ -64,8 +64,9 @@ def validate(df):
     # samples per config (should be N_SAMPLES=40 in a full run)
     key = ["exp", "p", "n", "alpha"]
     spc = df[df["algo"] == "domr"].groupby(key, dropna=False)["sample"].nunique()
-    print(f"\nsamples per config: min={spc.min()} max={spc.max()} (target 40); "
-          f"{(spc < 40).sum()} configs under 40")
+    tgt = int(spc.max()) if len(spc) else 0                # infer target from the fullest config (30 small/40 full)
+    print(f"\nsamples per config: min={spc.min()} max={spc.max()} (target {tgt}); "
+          f"{(spc < tgt).sum()} configs under target")
     return len(inval[inval["algo"] != "gmr_lp_rsp"])   # non-gmr-gap invalids = real problems
 
 
@@ -191,6 +192,49 @@ def runtime_weight_fit(df, min_points=8):
     return pd.DataFrame(rows).sort_values(["algo", "variant"]).reset_index(drop=True)
 
 
+def rounds_scaling_fit(df, min_points=8):
+    """Per-algorithm log-log OLS: log(rounds) ~ intercept + size_exp*log(n) + weight_exp*log(w_max).
+
+    `rounds` is the separation-oracle iteration count (cutting-plane rounds). It's the analogue of
+    runtime_weight_fit for ITERATIONS instead of CPU: `size_exp` is how the round count grows with n,
+    `weight_exp` with the largest weight w_max (the rsp weight-budget oracle's cost). Populated for the exact
+    ILP separation (gmr_ilp, iomr_ilp) and -- for results produced with the round-surfacing patch -- the
+    LP-separation (gmr_lp_*, iomr_lp_*) and covering-LP (iomr_thr_*, iomr_bestofk/rand/regiongrow) methods.
+    OLDER results simply have blank `rounds` for the latter, so those algos are skipped here (no crash) --
+    only rows with status ok and rounds>0 are pooled. An exponent is NaN when its regressor doesn't vary in
+    the pool (e.g. n pinned across Exp 2); r2/n_points gauge trust. Pairs with runtime_weight_fit: dividing
+    the CPU-vs-n exponent by this rounds-vs-n exponent isolates per-round cost growth from round-count growth.
+    """
+    if "rounds" not in df:
+        return pd.DataFrame(columns=["algo", "variant", "n_points", "size_exp", "weight_exp",
+                                     "intercept", "r2", "n_min", "n_max", "rounds_med", "rounds_max"])
+    d = df[(df["status"] == "ok") & (df["rounds"] > 0) & (df["n"] > 0) & (df["w_max"] > 0)].copy()
+    rows = []
+    for (algo, variant), g in d.groupby(["algo", "variant"], dropna=False):
+        y = np.log(g["rounds"].to_numpy(dtype=float))
+        ln = np.log(g["n"].to_numpy(dtype=float))
+        lw = np.log(g["w_max"].to_numpy(dtype=float))
+        cols, names = [np.ones_like(y)], ["intercept"]
+        if ln.std() > 1e-9:                     # size_exp identifiable only if n varies in this pool
+            cols.append(ln); names.append("size_exp")
+        if lw.std() > 1e-9:                     # weight_exp identifiable only if w_max varies
+            cols.append(lw); names.append("weight_exp")
+        rec = {"algo": algo, "variant": variant, "n_points": int(len(y)),
+               "size_exp": np.nan, "weight_exp": np.nan, "intercept": np.nan, "r2": np.nan,
+               "n_min": int(g["n"].min()), "n_max": int(g["n"].max()),
+               "rounds_med": float(np.median(g["rounds"])), "rounds_max": int(g["rounds"].max())}
+        if len(y) >= min_points and len(cols) >= 2:
+            X = np.column_stack(cols)
+            beta, *_ = np.linalg.lstsq(X, y, rcond=None)
+            resid = y - X @ beta
+            ss_tot = float(((y - y.mean()) ** 2).sum())
+            rec["r2"] = float(1 - (resid ** 2).sum() / ss_tot) if ss_tot > 0 else np.nan
+            for name, b in zip(names, beta):
+                rec[name] = float(b)
+        rows.append(rec)
+    return pd.DataFrame(rows).sort_values(["algo", "variant"]).reset_index(drop=True)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--results", required=True, help="results_all.csv or a dir of task_*.csv")
@@ -203,18 +247,26 @@ def main():
     df = derive(df)
     summ = aggregate(df)
     fit = runtime_weight_fit(df)
+    rfit = rounds_scaling_fit(df)
 
     rows_path = os.path.join(a.outdir, "rows_with_ratio.csv")
     summ_path = os.path.join(a.outdir, "summary.csv")
     fit_path = os.path.join(a.outdir, "runtime_weight_fit.csv")
+    rfit_path = os.path.join(a.outdir, "rounds_scaling_fit.csv")
     df.to_csv(rows_path, index=False)
     summ.to_csv(summ_path, index=False)
     fit.to_csv(fit_path, index=False)
+    rfit.to_csv(rfit_path, index=False)
     print(f"\nwrote {rows_path} ({len(df)} rows), {summ_path} ({len(summ)} groups), "
-          f"{fit_path} ({len(fit)} algos)")
+          f"{fit_path} ({len(fit)} algos), {rfit_path} ({len(rfit)} algos)")
 
     print("\nruntime scaling  log(cpu) ~ size_exp*log(n) + weight_exp*log(w_max):")
     print(fit[["algo", "variant", "n_points", "size_exp", "weight_exp", "r2"]].to_string(index=False))
+    print("\niteration scaling  log(rounds) ~ size_exp*log(n) + weight_exp*log(w_max):")
+    if len(rfit):
+        print(rfit[["algo", "variant", "n_points", "size_exp", "weight_exp", "r2"]].to_string(index=False))
+    else:
+        print("  (no rows with rounds>0 -- results predate the round-surfacing patch)")
 
     if problems:
         print(f"\n*** {problems} non-GMR-gap invalid covers -- investigate before trusting the analysis ***")
