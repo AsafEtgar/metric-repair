@@ -163,7 +163,12 @@ def _save_cover(covers_dir, graph, mode, seed, algo, cover):
 
 
 def run_real(graph, mode, seed, outdir, covers_dir):
-    G = load_edgelist(os.path.join("data", "processed", f"{graph}.csv"))
+    G0 = load_edgelist(os.path.join("data", "processed", f"{graph}.csv"))
+    # Relabel to contiguous ints 0..n-1: several repair algos index nodes as int array positions and break
+    # on string labels (nmr_atom "13:HG2#") or sparse ints. Covers are mapped back to the ORIGINAL labels
+    # on save (below), so GT alignment (ground_truth.py) still matches the graph's node IDs.
+    G = nx.convert_node_labels_to_integers(G0, label_attribute="orig")
+    orig = {i: G.nodes[i]["orig"] for i in G.nodes()}
     seed_all(seed)                                             # seeds the global RNG (pivot) + build_suite(seed)
     comps = [G.subgraph(c).copy() for c in nx.connected_components(G)]
     giant = max((c.number_of_nodes() for c in comps), default=0)
@@ -190,7 +195,8 @@ def run_real(graph, mode, seed, outdir, covers_dir):
             base.update(_aggregate(results))
             covers = [{_norm(u, v) for (u, v) in r["cover"]} for r in results if r.get("cover") is not None]
             if covers:
-                _save_cover(covers_dir, graph, mode, seed, name, set().union(*covers))
+                cu = set().union(*covers)                     # {(int,int)} -> map back to original node labels
+                _save_cover(covers_dir, graph, mode, seed, name, {(orig[u], orig[v]) for (u, v) in cu})
         rows.append(base)
 
     os.makedirs(outdir, exist_ok=True)
