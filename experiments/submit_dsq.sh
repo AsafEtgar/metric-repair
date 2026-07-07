@@ -35,7 +35,7 @@ dsq --job-file joblist.txt \
     --partition day \
     --account "pi_${NETID}" \
     --cpus-per-task 1 \
-    --mem-per-cpu 1g \
+    --mem-per-cpu 8g \
     --time 02:30:00 \
     --max-jobs "$MAXJOBS" \
     --output "logs/dsq-%A_%3a.out"

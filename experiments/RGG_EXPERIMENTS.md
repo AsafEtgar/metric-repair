@@ -157,30 +157,34 @@ and the 20·V triplet-sample size.
 
 ## 6. Running on the cluster
 
-From the repo root (`Average Metric Repair Sage`), with the conda env from `RUN.md` step 0:
+Two grids: **`poc`** (n=100..250 step 10, 30 seeds, ~960 tasks, 4 GB/task) for fast data + analysis, and
+**`full`** (n=500 sweeps, 40 seeds, 3160 tasks, 8 GB/task). Same commands, swap `poc`↔`full`. From the repo
+root with the conda env from `RUN.md` step 0:
 
 ```bash
-# 0. pull the code
 git pull
-
-# 1. smoke-test ONE task exactly as dSQ will run it (verifies env activation + the pipeline)
 module load miniconda && conda activate metricrepair
-python experiments/run_rgg_task.py --count                       # -> 3160
-bash experiments/submit_rgg_dsq.sh metricrepair <your_netid>     # builds rgg_joblist.txt + dsq_rgg_submit.sh
-bash -c "$(head -1 rgg_joblist.txt)"                             # runs task 0 (n=100, ~3-5 min)
+python experiments/run_rgg_task.py --grid poc --count            # -> 960
+
+# build joblist + batch script:  submit_rgg_dsq.sh <env> <PI_netid> [grid] [mem]
+bash experiments/submit_rgg_dsq.sh metricrepair <PI_netid> poc   # -> rgg_poc_joblist.txt, dsq_rgg_poc_submit.sh
+
+# smoke ONE task exactly as dSQ runs it (verifies env activation + pipeline):
+bash -c "$(head -1 rgg_poc_joblist.txt)"
 echo "exit: $?"                                                  # want 0
-head -3 results_rgg/task_000000.csv                             # header + rows
+head -3 results_rgg_poc/task_000000.csv
 
-# 2. submit the array + monitor
-sbatch dsq_rgg_submit.sh
+# submit + monitor
+sbatch dsq_rgg_poc_submit.sh
 squeue --me
-ls results_rgg/*.csv | wc -l                                    # progress toward 3160
-dSQAutopsy dsq_rgg_submit.sh rgg_joblist.txt
+ls results_rgg_poc/*.csv | wc -l                                # -> 960
+dSQAutopsy dsq_rgg_poc_submit.sh rgg_poc_joblist.txt
 
-# 3. collect
-python experiments/collect.py --indir results_rgg --out results_rgg_all.csv
+# collect + health-check (rgg_check.py runs LOCALLY, needs pandas)
+python experiments/collect.py --indir results_rgg_poc --out results_rgg_poc_all.csv
+sage -python experiments/rgg_check.py --results results_rgg_poc_all.csv
 ```
 
-Same dSQ setup as the POC run: `day` partition, `-A pi_<netid>`, 1 core + 1 GB/task, `--time 02:30:00`,
-`--max-jobs 64`. Est. wall-clock ~8–12 h. Each joblist line self-activates the env (the fix from the POC
-run), so a compute-node shell that doesn't inherit the login env still works.
+**Memory:** 4 GB/task (poc) / 8 GB/task (full) — the earlier **1 GB OOM'd at n=500** (2878 tasks). Override
+with a 4th arg, e.g. `submit_rgg_dsq.sh metricrepair <PI_netid> full 12g`. `day` partition, 1 core/task,
+`--time 02:30:00`, `--max-jobs 64`; each joblist line self-activates the env. POC wall-clock ~1 h.

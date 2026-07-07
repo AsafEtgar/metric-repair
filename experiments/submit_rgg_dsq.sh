@@ -1,47 +1,52 @@
 #!/bin/bash
-# Build the RGG joblist and a Dead-Simple-Queue (dSQ) batch script for the Bouchet cluster.
-# Sibling of submit_dsq.sh (RGG_EXPERIMENTS.md). Run this FROM THE REPO ROOT.
-# It does NOT submit -- it prints the sbatch command so you can review first.
+# Build an RGG joblist + dSQ batch script for the Bouchet cluster. Sibling of submit_dsq.sh.
+# Run FROM THE REPO ROOT. Does NOT submit -- prints the sbatch command so you can review first.
 #
-#   bash experiments/submit_rgg_dsq.sh <conda_env> <pi_netid>
+#   bash experiments/submit_rgg_dsq.sh <conda_env> <pi_netid> [grid] [mem]
+#     grid = poc (n=100..250, 30 seeds, ~960 tasks)  |  full (n=500 sweeps, 40 seeds, 3160 tasks)
+#     mem  = per-task memory (default 4g for poc, 8g for full -- the old 1g OOM'd at n=500)
 #
-# Prereqs: a conda env with numpy/scipy/networkx (the pure-Python port needs no Sage on the cluster).
+# Prereqs: a conda env with numpy/scipy/networkx.
 set -euo pipefail
 
-ENV="${1:-metricrepair}"           # conda env name
-NETID="${2:-CHANGE_ME}"            # your netid, for -A pi_<netid>
-MAXJOBS=64                         # concurrent tasks (cores); well under the day-partition cap (1024)
-OUTDIR=results_rgg
+ENV="${1:-metricrepair}"
+NETID="${2:-CHANGE_ME}"
+GRID="${3:-poc}"
+if [ "$GRID" = "poc" ]; then DEFMEM=4g; else DEFMEM=8g; fi
+MEM="${4:-$DEFMEM}"
+MAXJOBS=64
+
+if [ "$GRID" = "full" ]; then
+    OUTDIR=results_rgg;         JOB=rgg_joblist.txt;             BATCH=dsq_rgg_submit.sh
+else
+    OUTDIR="results_rgg_$GRID"; JOB="rgg_${GRID}_joblist.txt";   BATCH="dsq_rgg_${GRID}_submit.sh"
+fi
 
 module load miniconda dSQ 2>/dev/null || echo "note: 'module load miniconda dSQ' failed -- load them yourself"
 conda activate "$ENV"
 
 mkdir -p "$OUTDIR" logs
-NTASKS=$(python experiments/run_rgg_task.py --count)
-echo "rgg tasks: $NTASKS"
+NTASKS=$(python experiments/run_rgg_task.py --grid "$GRID" --count)
+echo "rgg grid=$GRID tasks=$NTASKS mem=$MEM -> $OUTDIR"
 
-# --setup bakes env activation into EVERY task line: dSQ runs each line in a bare, non-interactive shell
-# that does NOT inherit this login-shell env, and `conda activate` alone errors there ("Run 'conda init'
-# before ...") because module load doesn't install conda's shell functions -- so source conda.sh first.
+# --setup bakes env activation into EVERY task line (dSQ runs each line in a bare non-interactive shell that
+# doesn't inherit this env; `conda activate` alone errors there, so source conda.sh first).
 CONDA_SETUP='module load miniconda && source "$(conda info --base)/etc/profile.d/conda.sh" && conda activate '"$ENV"
-python experiments/make_rgg_joblist.py --python python --outdir "$OUTDIR" --joblist rgg_joblist.txt \
+python experiments/make_rgg_joblist.py --python python --grid "$GRID" --outdir "$OUTDIR" --joblist "$JOB" \
     --setup "$CONDA_SETUP"
 
-# dsq turns rgg_joblist.txt into an array batch script; --max-jobs throttles concurrency to $MAXJOBS.
-# --time is PER TASK (one graph = the whole 15-algorithm suite, + kNN for Part 2); the harness caps each
-# algorithm at 30 min and each task at 120 min, so 2:30:00 leaves slack. --mem-per-cpu 1g matches.
-dsq --job-file rgg_joblist.txt \
-    --batch-file dsq_rgg_submit.sh \
+dsq --job-file "$JOB" \
+    --batch-file "$BATCH" \
     --partition day \
     --account "pi_${NETID}" \
     --cpus-per-task 1 \
-    --mem-per-cpu 1g \
+    --mem-per-cpu "$MEM" \
     --time 02:30:00 \
     --max-jobs "$MAXJOBS" \
-    --output "logs/dsq-rgg-%A_%3a.out"
+    --output "logs/dsq-rgg-${GRID}-%A_%3a.out"
 
 echo
-echo "Created dsq_rgg_submit.sh.  Review it, then submit with:"
-echo "    sbatch dsq_rgg_submit.sh"
-echo "Monitor:   squeue --me    |   dSQAutopsy dsq_rgg_submit.sh rgg_joblist.txt"
-echo "Collect:   python experiments/collect.py --indir $OUTDIR --out results_rgg_all.csv"
+echo "Created $BATCH.  Review it, then submit with:"
+echo "    sbatch $BATCH"
+echo "Monitor:   squeue --me    |   dSQAutopsy $BATCH $JOB"
+echo "Collect:   python experiments/collect.py --indir $OUTDIR --out results_rgg_${GRID}_all.csv"

@@ -108,8 +108,23 @@ def _points_part2():
 POINTS_RGG = _points_part1() + _points_part2()
 
 
-def all_tasks():
-    return [(cfg, s) for cfg in POINTS_RGG for s in range(N_SAMPLES)]
+def _points_poc():
+    """Small proof-of-concept grid: size sweep n=100..250 (step 10), both break flavors, n<=250 so it
+    fits comfortably in memory. Each n gets an inflate reweight (part1-style: ratios + edit metrics) and a
+    jitter (part2-style: ratios + edit metrics + kNN recovery). Averaged over SAMPLES['poc'] seeds."""
+    pts = []
+    for n in range(100, 251, 10):
+        a = _base_p1(); a.update(part="p1", sweep="POCsize_inflate", n=n); pts.append(a)
+        b = _base_p2(); b.update(part="p2", sweep="POCsize_jitter", n=n); pts.append(b)
+    return pts
+
+
+GRIDS = {"full": POINTS_RGG, "poc": _points_poc()}
+SAMPLES = {"full": N_SAMPLES, "poc": 30}
+
+
+def all_tasks(grid="full"):
+    return [(cfg, s) for cfg in GRIDS[grid] for s in range(SAMPLES[grid])]
 
 
 def task_seed(cfg, s):
@@ -366,6 +381,6 @@ def _run(cfg, s, task_index, outdir):
     return path
 
 
-def run_one_rgg_task(task_index, outdir):
-    cfg, s = all_tasks()[task_index]
+def run_one_rgg_task(task_index, outdir, grid="full"):
+    cfg, s = all_tasks(grid)[task_index]
     return _run(cfg, s, task_index, outdir)
