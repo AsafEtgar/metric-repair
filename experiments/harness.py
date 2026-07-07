@@ -72,12 +72,29 @@ def _points():
     return pts
 
 
+def _points_small():
+    """Smaller POC grid: Exp1 n=100..300 (step 10), Exp2a/2b at n=300 -- memory-safe. 30 seeds (SAMPLE_COUNT)."""
+    pts = []
+    for p in (0.3, 0.5):
+        for n in _ints(np.linspace(100, 300, 21)):
+            pts.append(dict(exp="exp1", model="geometric", n=n, p=float(p), alpha=None))
+    for a in np.linspace(0.5, 2.0 / 3.0, 20):
+        n = 300
+        pts.append(dict(exp="exp2a", model="geometric", n=n, p=float(n ** (-a)), alpha=float(a)))
+    for a in np.linspace(0.5, 0.8, 20):
+        n = 300
+        pts.append(dict(exp="exp2b", model="decoupled_geometric", n=n, p=float(n ** (-a)), alpha=float(a)))
+    return pts
+
+
 POINTS = _points()
+GRIDS = {"full": POINTS, "small": _points_small()}
+SAMPLE_COUNT = {"full": N_SAMPLES, "small": 30}
 
 
-def all_tasks():
+def all_tasks(grid="full"):
     """Flat list of (point, sample_index). One task -> one graph -> one CSV file."""
-    return [(pt, s) for pt in POINTS for s in range(N_SAMPLES)]
+    return [(pt, s) for pt in GRIDS[grid] for s in range(SAMPLE_COUNT[grid])]
 
 
 def task_seed(pt, s):
@@ -250,8 +267,8 @@ META_FIELDS = ("task", "exp", "model", "n", "p", "alpha", "sample", "seed",
 CSV_FIELDS = list(META_FIELDS) + ["algo", "variant"] + list(RUN_FIELDS)
 
 
-def run_one_task(task_index, outdir):
-    pt, s = all_tasks()[task_index]
+def run_one_task(task_index, outdir, grid="full"):
+    pt, s = all_tasks(grid)[task_index]
     seed = task_seed(pt, s)
     G = generate(pt, seed)
     comps = [G.subgraph(c).copy() for c in nx.connected_components(G)]

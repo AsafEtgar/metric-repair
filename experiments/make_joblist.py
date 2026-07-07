@@ -20,15 +20,17 @@ def main():
     ap.add_argument("--python", default="python", help="interpreter on the cluster (conda env python)")
     ap.add_argument("--outdir", default="results")
     ap.add_argument("--joblist", default="joblist.txt")
+    ap.add_argument("--grid", default="full", choices=["full", "small"], help="which task grid")
     ap.add_argument("--setup", default="", help="shell prefix prepended (with &&) to every task command, "
                     "e.g. 'module load miniconda && conda activate metricrepair'")
     a = ap.parse_args()
-    n = len(all_tasks())
+    n = len(all_tasks(a.grid))
     prefix = f"{a.setup} && " if a.setup else ""
     with open(a.joblist, "w") as f:
         for i in range(n):
-            f.write(f"{prefix}{a.python} experiments/run_task.py --task-index {i} --outdir {a.outdir}\n")
-    print(f"{n} tasks -> {a.joblist}  (outdir={a.outdir})")
+            f.write(f"{prefix}{a.python} experiments/run_task.py --task-index {i} "
+                    f"--outdir {a.outdir} --grid {a.grid}\n")
+    print(f"{n} tasks ({a.grid}) -> {a.joblist}  (outdir={a.outdir})")
 
 
 if __name__ == "__main__":
