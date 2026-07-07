@@ -56,6 +56,9 @@ data/raw/*
 !data/raw/.gitkeep
 data/processed/*
 !data/processed/.gitkeep
+# the built graphs (~13MB) ARE tracked so the cluster gets them via git pull (scp was flaky).
+# GT artifacts under data/processed/gt/ stay ignored (regenerable locally by ground_truth.py).
+!data/processed/*.csv
 # (data/examples/ and data/README.md are tracked normally)
 
 # Notes:
