@@ -31,7 +31,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) 
 from graph_models import seed_all                                                 # noqa: E402
 from datasets import load_edgelist                                                # noqa: E402
 from metric_repair import domr_alg                                                # noqa: E402
-from harness import build_suite, _aggregate, VERIFY, RUN_FIELDS, TIMEOUT_S, _RSS_MB   # noqa: E402
+from harness import build_suite, _aggregate, VERIFY, RUN_FIELDS, REGION_H_MAX, _RSS_MB   # noqa: E402
 
 # ----------------------------------------------------------------------------
 # Config
@@ -41,6 +41,15 @@ RAND_ALGOS = {"pivot", "iomr_rand", "iomr_bestofk", "gmr_rand", "gmr_bestofk"}
 ILP_ALGOS = {"gmr_ilp", "iomr_ilp"}
 ILP_TIMEOUT_S = 17 * 3600                                   # 17h exact-ILP cap (per REAL_EXPERIMENTS.md)
 N_SEEDS = 30                                                # randomized algos averaged over 30 seeds
+
+# harness.TIMEOUT_S (1800s) is tuned for the SMALL synthetic graphs (n<=500) where every heuristic finishes
+# fast. On the big real graphs it is catastrophic: on ripe_atlas (n=999, 442k edges, 95% broken) EVERY one of
+# the 11 deterministic heuristics runs the full 1800s (measured), so a det task needs ~5.5h and dies at the
+# 2.5h SLURM walltime with NO csv written -- the cause of the truncated heur run (only ~286/589 csvs landed).
+# Cap each heuristic tighter, and add a per-task budget net so the csv is ALWAYS written within walltime.
+REAL_HEUR_TIMEOUT_S = 600                                   # per-(algo, component) wall cap for non-ILP heuristics
+REAL_TASK_BUDGET_S = 3 * 3600                               # once a task's summed algo wall exceeds this, the
+                                                            # remaining algos are marked skipped_time (csv still lands)
 
 BASE_GRAPHS = ["dimacs_ny_d", "dimacs_ny_t", "ripe_atlas", "nmr_1d3z_atom", "nmr_1d3z_residue",
                "pbmc3k_cosine_knn", "cassiopeia_barcode_knn"]
@@ -133,7 +142,9 @@ def run_isolated(fn, CC, verify_fn, timeout_s):
     child_conn.close()
     p.join(timeout_s)
     if p.is_alive():
-        p.terminate(); p.join()
+        p.terminate(); p.join(5)               # SIGTERM, then give it 5s to unwind
+        if p.is_alive():                       # stuck in a C call / uninterruptible -> SIGKILL so the cap is hard
+            p.kill(); p.join()
         return {"status": "timeout", "wall": time.perf_counter() - t0}
     if parent_conn.poll():
         return parent_conn.recv()
@@ -190,14 +201,22 @@ def run_real(graph, mode, seed, outdir, covers_dir):
                 w_min=(min(ws) if ws else 0), w_max=(max(ws) if ws else 0))
 
     rows = []
+    elapsed = 0.0
     for (name, variant, vkey, n_max, region_gated, fn) in _suite_for(mode, seed):
         base = {**meta, "algo": name, "variant": variant, **{f: None for f in RUN_FIELDS}}
-        if not nonmetric:                                      # already metric -> empty cover (control case)
+        if name not in ILP_ALGOS and elapsed >= REAL_TASK_BUDGET_S:   # budget spent -> skip rest (csv still lands)
+            base["status"] = "skipped_time"
+        elif n_max is not None and giant > n_max:
+            base["status"] = "skipped_n"
+        elif region_gated and total_H > REGION_H_MAX:          # region growing is O(V*E)/pair -> only for small |H|
+            base["status"] = "skipped_H"
+        elif not nonmetric:                                    # already metric -> empty cover (control case)
             base.update(status="ok", size=0, valid=1, cpu=0.0, wall=0.0, peak_mb=0.0)
         else:
-            to = ILP_TIMEOUT_S if name in ILP_ALGOS else TIMEOUT_S
+            to = ILP_TIMEOUT_S if name in ILP_ALGOS else REAL_HEUR_TIMEOUT_S
             results = [run_isolated(fn, CC, VERIFY[vkey], to) for CC in nonmetric]
             base.update(_aggregate(results))
+            elapsed += base.get("wall") or 0.0
             covers = [{_norm(u, v) for (u, v) in r["cover"]} for r in results if r.get("cover") is not None]
             if covers:
                 cu = set().union(*covers)                     # {(int,int)} -> map back to original node labels

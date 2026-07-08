@@ -3,7 +3,7 @@
 # submit_rgg_dsq.sh. Run FROM THE REPO ROOT. Does NOT submit -- prints the sbatch command to review first.
 #
 #   bash experiments/submit_real_dsq.sh <conda_env> <pi_netid> <array> [mem]
-#     array = heur (589 tasks: det x1 + rand x30 per graph, short walltime)
+#     array = heur (589 tasks: det x1 + rand x30 per graph, ~4h walltime -- big-H graphs are slow)
 #           | ilp  (32 tasks: gmr_ilp/iomr_ilp per distance-sensible graph, 17h walltime)
 #     mem   = per-task memory (default 8g; dense ripe is the stress case -- bump to 16g if it OOMs)
 #
@@ -17,7 +17,9 @@ NETID="${2:-CHANGE_ME}"
 ARRAY="${3:-heur}"
 MEM="${4:-8g}"
 MAXJOBS=64
-if [ "$ARRAY" = "ilp" ]; then TIME=17:30:00; else TIME=02:30:00; fi   # ilp: 17h cap + slack
+# ilp: 17h cap + slack.  heur: worst det task = 11 heuristics x REAL_HEUR_TIMEOUT_S(600s) = ~110min on the
+# big-H graphs (ripe/flycns/bct); 4h gives margin over that + the REAL_TASK_BUDGET_S(3h) safety net.
+if [ "$ARRAY" = "ilp" ]; then TIME=17:30:00; else TIME=04:00:00; fi
 
 OUTDIR=results_real
 COVERS=results_real_covers

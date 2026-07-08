@@ -5,9 +5,10 @@
 Reports, so you can catch a partial/broken run before trusting it:
   * FILE COVERAGE  -- which of the 621 expected task CSVs (589 heur + 32 ilp) are missing (task crashed
                       before writing, or still running) or unexpected.
-  * STATUS         -- error/oom/killed rows and timeouts. The 17h exact ILPs are EXPECTED to time out on the
-                      big graphs (ripe/flycns -> LP-bound fallback), so those are reported separately as
-                      benign; everything else counts.
+  * STATUS         -- timeouts are a CONTROLLED cap, not a crash: the 17h ILP cap (-> LP-bound fallback) and
+                      the REAL_HEUR_TIMEOUT_S heuristic cap (slow heuristic on a big-H graph like ripe/flycns)
+                      are both benign, as are skipped_H (region gate) / skipped_time (per-task budget). Only
+                      error/oom/killed count as hard failures.
   * INVALID COVERS -- valid==0 (a produced cover that doesn't verify -- always a bug).
   * ALGO COVERAGE  -- each graph should have its full set of algorithms across its files.
   * METRIC CONTROL -- dimacs_ny_d is metric, so every cover must be size 0 (repair does nothing).
@@ -77,16 +78,22 @@ def check(results, covers=None):
     if df.empty:
         print(f"\nPROBLEMS: {problems}"); return problems
 
-    # ---- status: separate expected ILP timeouts from genuine failures ----
+    # ---- status: timeouts are a CONTROLLED cap, not a crash. Both the 17h ILP cap (-> LP-bound fallback) and
+    #      the REAL_HEUR_TIMEOUT_S heuristic cap (a slow heuristic on a big-H graph -> that cell has no cover)
+    #      are benign. skipped_H (region gate) / skipped_time (per-task budget) are benign too (not in `bad`).
+    #      Only error/oom/killed are genuine failures. ----
     print("\nstatus counts:")
     print(df["status"].value_counts().to_string())
     bad = df[df["status"].str.startswith(("error", "oom", "killed", "timeout"), na=False)]
-    is_ilp_to = bad["status"].str.startswith("timeout", na=False) & bad["algo"].isin(ILP)
-    expected_to, hard = bad[is_ilp_to], bad[~is_ilp_to]
-    print(f"\nexpected 17h ILP timeouts (gmr_ilp/iomr_ilp -> LP-bound fallback, benign): {len(expected_to)}")
-    if len(expected_to):
-        print(expected_to.groupby("graph").size().to_string())
-    print(f"\nHARD failures (error/oom/killed, or timeout in any non-ILP algo): {len(hard)}")
+    is_to = bad["status"].str.startswith("timeout", na=False)
+    timeouts, hard = bad[is_to], bad[~is_to]
+    ilp_to = timeouts[timeouts["algo"].isin(ILP)]
+    heur_to = timeouts[~timeouts["algo"].isin(ILP)]
+    print(f"\nbenign timeouts: {len(ilp_to)} ILP (17h cap -> LP bound) + {len(heur_to)} heuristic "
+          f"(hit REAL_HEUR_TIMEOUT_S on a big-H graph -> that algo x graph cell has no cover)")
+    if len(heur_to):
+        print(heur_to.groupby("graph")["algo"].nunique().rename("n_algos_timed_out").to_string())
+    print(f"\nHARD failures (error/oom/killed only): {len(hard)}")
     if len(hard):
         print(hard.groupby(["algo", "status"]).size().to_string())
         problems += len(hard)
