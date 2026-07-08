@@ -139,16 +139,24 @@ def run_isolated(fn, CC, verify_fn, timeout_s):
     p = ctx.Process(target=_child, args=(fn, CC, verify_fn, child_conn))
     t0 = time.perf_counter()
     p.start()
-    child_conn.close()
-    p.join(timeout_s)
-    if p.is_alive():
-        p.terminate(); p.join(5)               # SIGTERM, then give it 5s to unwind
+    child_conn.close()                         # parent is read-only -> poll() sees EOF the instant the child dies
+    # DRAIN-AS-YOU-WAIT (do NOT p.join() first). _child sends the full cover, which on the big-H real graphs
+    # (ripe: 421k edges) far exceeds the ~64KB OS pipe buffer. If we joined first, the child would block in
+    # send() waiting for a reader while we block in join() waiting for it to exit -> deadlock, and the algo
+    # burns its ENTIRE timeout (this is what killed the heur run: 11 algos x 1800s deadlock >> walltime -> no
+    # csv). poll() lets recv() start reading, which unblocks the child. (harness._child sends no cover, so its
+    # p.join() variant is safe -- only the real harness ships large payloads.)
+    if not parent_conn.poll(timeout_s):        # no result within the cap -> genuinely still computing -> kill
+        p.terminate(); p.join(5)
         if p.is_alive():                       # stuck in a C call / uninterruptible -> SIGKILL so the cap is hard
             p.kill(); p.join()
         return {"status": "timeout", "wall": time.perf_counter() - t0}
-    if parent_conn.poll():
-        return parent_conn.recv()
-    return {"status": "killed" if (p.exitcode and p.exitcode != 0) else "error:noresult"}
+    try:
+        out = parent_conn.recv()               # child is mid-send -> our read drains the pipe and unblocks it
+    except EOFError:                            # child died before sending (segfault / OOM-kill)
+        out = {"status": "killed"}
+    p.join()
+    return out
 
 
 # ----------------------------------------------------------------------------
