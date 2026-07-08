@@ -104,15 +104,15 @@ def _points_large():
     # ladder is capped at n<=1500 (n=2000,p=0.5 would be ~1M edges, where even domr times out; probe finding).
     # p in {0.3, 0.5}; ~edges = p*n^2/2 -> at most 0.5*1500^2/2 = 562k (heavy but tractable; domr+LP land).
     for p in (0.3, 0.5):
-        for n in (1000, 1250, 1500):
+        for n in _ints(np.linspace(1000, 1500, 10)):   # finer 10-point mesh over the tractable dense range
             pts.append(dict(exp="exp1", model="geometric", n=n, p=float(p), alpha=None))
-    # exp2: decoupled geometric density ONSET, p = 2*n^-alpha (alpha 4/5 -> 1/3, denser than the small exp2b),
-    # swept over n x alpha. Density is alpha-controlled, so the sparse-alpha / n=1000 points are light; only the
-    # dense corner (n=2000, alpha~1/3 -> ~317k edges) is heavy, where heuristics fall back to the LP bound.
-    for n2 in (1000, 1500, 2000):
-        for a in np.linspace(4.0 / 5.0, 1.0 / 3.0, 12):
-            pts.append(dict(exp="exp2b", model="decoupled_geometric", n=n2,
-                            p=float(2.0 * n2 ** (-a)), alpha=float(a)))
+    # exp2: decoupled geometric density ONSET at FIXED n=2000, p = 2*n^-alpha (alpha 4/5 -> 1/3, 16 pts).
+    # alpha-controlled density: sparse-alpha points are light (~9k edges); only the dense end (alpha~1/3 ->
+    # ~317k edges) is heavy, where heuristics fall back to the LP bound (domr ~9s still lands).
+    n2 = 2000
+    for a in np.linspace(4.0 / 5.0, 1.0 / 3.0, 16):
+        pts.append(dict(exp="exp2b", model="decoupled_geometric", n=n2,
+                        p=float(2.0 * n2 ** (-a)), alpha=float(a)))
     return pts
 
 

@@ -108,6 +108,13 @@ def _points_part2():
         add("P2j", jitter_r=jr)
     for nj in (2, 4, 8, 16, 32):                              # jitter count sweep
         add("P2n", n_jitter=nj)
+    # kNN recovery under SHORTCUT (deflate) corruption -- the regime where repair actually helps downstream
+    # (same as the large grid's P2df/P2dm, at this grid's n=300 baseline). Per-algo lift exposes the variant
+    # dissociation (GMR/IOMR help, DOMR ~0). New in this grid -> a re-run also fixes the old no-op S3d/S4d.
+    for q in (0.02, 0.05, 0.1, 0.2, 0.3):                     # kNN recovery vs deflate FRACTION
+        add("P2df", break_type="reweight", direction="deflate", frac_q=q, magnitude=5.0)
+    for m in (2.0, 3.0, 5.0, 10.0):                           # kNN recovery vs deflate MAGNITUDE
+        add("P2dm", break_type="reweight", direction="deflate", frac_q=0.1, magnitude=float(m))
     return pts
 
 

@@ -14,7 +14,7 @@ suite on the RGG and geometric models. Pairs with the per-campaign specs it poin
 |---|---|---|---|---|---|---|---|---|
 | 1 | **Geometric small** | geometric (`grid=small`) | exp1 100–300 (step 10); exp2a/2b @ n=300 | 82 × 30 = **2460** | 21 (incl. rsp + ILP) | `results_small/` → `results_small_all.csv` | ~454 core-h¹ | ✅ complete |
 | 2 | **RGG poc** | RGG float (`grid=poc`) | 100–250 (step 10) | 32 × 30 = **960** | 15 (rsp dropped) | `results_rgg_poc/` → `results_rgg_poc_all.csv` | ~16 core-h | ✅ complete |
-| 3 | **RGG full** | RGG float (`grid=full`) | size sweeps 100–500 (step 20); OFAT baseline n=300 | 116 × 40 = **4640** | 15 (rsp dropped) | `results_rgg/` → `results_rgg_full_all.csv` | ~55 core-h | ✅ complete |
+| 3 | **RGG full** | RGG float (`grid=full`) | size sweeps 100–500 (step 20); OFAT baseline n=300 | now **125 × 40 = 5000** (+P2df/P2dm) | 18 (rsp dropped) | `results_rgg/` → `results_rgg_full_all.csv` | ~55–75 core-h | ⟳ re-run: adds P2df/P2dm kNN-recovery, `light_frac`, and FIXES the old no-op deflate (S3d/S4d) |
 | 4 | **Real datasets — heur** | 19 real graphs | n=75–5000 (per graph) | 19×(1 det + 30 rand) = **589** | 18 (rsp dropped) | `results_real/` (+ `results_real_covers/`) | ~4h array setup | 🔄 re-running² |
 | 5 | **Real datasets — ILP** | 16 dist-sensible graphs | same graphs | 16 × 2 = **32** | gmr_ilp / iomr_ilp | `results_real/` | 17 h/task cap | ⏳ once-ever³ |
 
@@ -26,6 +26,35 @@ truncated to ~286/589 CSVs; the big-H graphs (ripe/flycns/bct/…) will now retu
 
 **Where each campaign is specified in full:** geometric → `EXPERIMENTS.md`; RGG → `RGG_EXPERIMENTS.md`
 (sweeps S1–S6 / P2*); real → `REAL_EXPERIMENTS.md`. Cluster runbook → `RUN.md`.
+
+### Campaign map — what each experiment checks, and which algorithms it drops
+
+Full suite = **21**: refs `domr`, `gmr_lp_naive`/`iomr_lp_naive`; exact `gmr_ilp`/`iomr_ilp`; covering-LP rounding
+`{gmr,iomr}_{thr_naive,bestofk,rand}`; `iomr_regiongrow`; `l1sep_{gmr,iomr}`; `spc_{gmr,iomr}`; `pivot`;
+`left_edge`; and 3 weight-budget `*_rsp`. Standing drops: **`*_rsp`** (need integer weights, cost O(w_max·n²) —
+dropped on every FLOAT graph and at large scale); **`gmr_ilp`/`iomr_ilp`** (NP-hard — kept only where they can
+converge, i.e. small n; dropped entirely at n≥1000); **`iomr_regiongrow`** never dropped but auto-skips when |H|>200.
+
+| graph model — experiment | what it checks | suite (drops) |
+|---|---|---|
+| **Geometric small** — exp1 inflate (n≤300) | approx ratio (size/OPT) & runtime vs n; GMR exact = OPT here | **21** (integer → rsp+ILP kept) |
+| ” — exp2a onset (n=300) | non-metricity **onset** vs edge density (α≈3/5) | 21 |
+| ” — exp2b density (n=300) | ratio vs edge density on decoupled geometric | 21 |
+| **Geometric large** — exp1 inflate (p{.3,.5}, n=1000–1500) | ratio_domr & `light_frac` vs n on dense geometric | **16** (−rsp −ILP) |
+| ” — exp2 density onset (n=2000, α 4/5→1/3) | algo **separation** as graphs densify / break more | 16 |
+| **RGG poc** — size (n≤250, inflate+jitter) | fast smoke: edit prec/recall, ratio_domr, kNN | **18** (−rsp) |
+| **RGG full** — S1 inflate size | ratio_domr / edit-precision-recall vs n | 18 |
+| ” — S2 / S2k density (radius / knn) | density & topology effect | 18 |
+| ” — S3/S3d, S4i/S4d inflate & **deflate** mag/frac | corruption severity & direction (deflate now fixed) | 18 |
+| ” — S5a/b/c jitter | edit metrics under sensor-drift jitter | 18 |
+| ” — P2size/s/j/n jitter kNN | kNN neighborhood recovery under **jitter** | 18 (LP-bounds have no cover → out of kNN) |
+| ” — **P2df / P2dm deflate kNN** (new) | **does repair restore kNN under shortcuts** + variant split | 18 |
+| **RGG large** — S1 / S1d inflate / **deflate** size | ratio_domr & `light_frac` vs n→3000; GMR ≠ DOMR | **16** (−rsp −ILP) |
+| ” — S2 / S2k density (n=2000) | density & topology at scale | 16 |
+| ” — P2size jitter kNN vs n | kNN recovery scaling | 16 |
+| ” — **P2df / P2dm deflate kNN** (n=1000) | **where repair helps kNN** + variant dissociation | 16 |
+| **Real — heur** (19 graphs) | ratio_domr / edit / `light_frac` on real data | **18** (−rsp) |
+| **Real — ILP** (16 graphs, 17 h) | exact GMR/IOMR reference where it converges | **2** (the ILPs only) |
 
 ### Headline findings (so the next design is informed)
 
@@ -94,8 +123,8 @@ n ∈ {1000, 1200, 1400, 1600, 1800, 2000, 2200, 2400, 2600, 2800, 3000}   # ste
 | **RGG density (radius)** | S2 | RGG float, `radius` | deg ∈ {4,8,12,20,30,40} | **n=2000**, inflate | `ratio_domr` vs density |
 | **RGG density (knn)** | S2k | RGG float, **`knn`** | k ∈ {8,12,20,30} | **n=2000**, inflate | knn-topology density variant |
 | **RGG kNN recovery** ★ | P2df, P2dm | RGG float, `radius` | **deflate** frac_q ∈ {.02..0.3} · mag ∈ {2..10} | **n=1000** | **kNN lift by variant** — where repair HELPS |
-| **GEO / exp1** | exp1 | coupled geometric, int | n ∈ {1000, 1250, 1500} | **p ∈ {0.3, 0.5}** | `ratio_domr`, `light_frac` vs n |
-| **GEO / exp2** | exp2b | decoupled geometric, int | **n ∈ {1000,1500,2000} × α: 4/5→1/3** (`p=2·n^−α`) | — | density onset + separation, vs n |
+| **GEO / exp1** | exp1 | coupled geometric, int | **10-pt mesh n=1000…1500** | **p ∈ {0.3, 0.5}** | `ratio_domr`, `light_frac` vs n |
+| **GEO / exp2** | exp2b | decoupled geometric, int | **α: 4/5→1/3** (16 pts, `p=2·n^−α`) | **n=2000** | density onset + algo separation |
 
 ★ **The kNN-recovery arm is the "does repair help downstream?" experiment.** kNN/triplet run on shortest-path
 distance, so a too-long (inflate) edge is invisible to them and repairing it can't change kNN — that's why every
@@ -104,18 +133,17 @@ repair helps: measured **exact-GMR lift +0.41** at severe deflate (n=300), and a
 GMR/IOMR recover (they raise/drop the light shortcut) while **DOMR gives exactly 0** (decrease-only touches only
 the heavy victims, off the shortest paths). `light_frac` also predicts recovery quality (low-light covers can hurt).
 
-**exp2 detail:** `p = 2·n^{−α}`, α **decreasing** from 4/5 to 1/3 (12 points), **swept over n ∈ {1000,1500,2000}**.
-The ×2 keeps it connected further in; lowering α densifies it. Density is α-controlled so most points are light
-(α=0.8 → ~4–9k edges); only the dense corner (n=2000, α≈1/3 → **~317k edges**) is heavy — there heuristics fall
-back to the LP bound / time out, but `domr` (≈9 s) and `ratio_domr` still land.
+**exp2 detail:** `p = 2·n^{−α}`, α **decreasing** from 4/5 to 1/3 (16 points) at **fixed n=2000**. The ×2 keeps
+it connected further in; lowering α densifies it (**p ≈ 0.005 → 0.16**, ~9k → ~317k edges). Only the dense end
+(α≈1/3) is heavy — heuristics fall back to the LP bound there, but `domr` (≈9 s) and `ratio_domr` still land.
 
-**GEO exp1 is capped at n ≤ 1500** because its `p` is an edge probability (dense): edges ≈ p·n²/2, so the
-heaviest config is p=0.5,n=1500 ≈ **562k edges** (≈ ripe-scale, tractable); n=2000,p=0.5 would be ~1M and was
-dropped (even `domr` times out there — probe finding).
+**GEO exp1 is capped at n ≤ 1500** (10-point mesh 1000→1500) because its `p` is an edge probability (dense):
+edges ≈ p·n²/2, so the heaviest config is p=0.5,n=1500 ≈ **562k edges** (≈ ripe-scale, tractable); n=2000,p=0.5
+would be ~1M and was dropped (even `domr` times out there — probe finding).
 
 **Config count:** RGG-large = 11 (S1) + 11 (S1d) + 11 (P2size) + 6 (S2) + 4 (S2k) + 5 (P2df) + 4 (P2dm) =
-**52 configs / 1040 tasks**. GEO-large = 6 (exp1) + 36 (exp2b: 3 n × 12 α) = **42 configs / 840 tasks**. Total
-**94 configs / 1880 tasks** @ 20 seeds.
+**52 configs / 1040 tasks**. GEO-large = 20 (exp1: 2 p × 10 n) + 16 (exp2b α @ n=2000) = **36 configs / 720
+tasks**. Total **88 configs / 1760 tasks** @ 20 seeds.
 
 > **Probe-measured cost/memory** (per instance, at the heavy end): RGG scales cleanly to **n=3000** (~890 MB
 > peak, `domr` ~3 s; the P2/kNN pass ~17 min). GEO edge counts (≈ p·n²/2) are the constraint — exp1 capped at
