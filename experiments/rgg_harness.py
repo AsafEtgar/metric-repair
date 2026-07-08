@@ -129,12 +129,14 @@ LARGE_NS = tuple(range(1000, 3001, 200))                   # 1000..3000 step 200
 
 
 def _points_large():
-    """Large-scale grid (see EXPERIMENT_REGISTRY.md §3): the n-ladder swept at a fixed baseline (P1 inflate +
-    P2 jitter), plus density at n=2000 in both radius and knn modes. Reuses the S1/P2size/S2/S2k sweep ids so
-    rgg_analyze/rgg_plots work unchanged. No ILP at this scale (dropped in build_suite_rgg via drop_ilp)."""
+    """Large-scale grid (see EXPERIMENT_REGISTRY.md §3): the n-ladder swept at a fixed baseline for three
+    corruptions -- P1 inflate (S1), P1 DEFLATE (S1d, where GMR departs from DOMR by raising light shortcut
+    edges), and P2 jitter/kNN (P2size) -- plus density at n=2000 in both radius and knn modes. Reuses the
+    S1/S1d/P2size/S2/S2k sweep ids so rgg_analyze/rgg_plots work. No ILP at this scale (drop_ilp)."""
     pts = []
-    for n in LARGE_NS:                                      # size ladder: P1 inflate + P2 jitter (kNN)
+    for n in LARGE_NS:                                      # size ladder: inflate + deflate + jitter
         a = _base_p1(); a.update(sweep="S1", n=n); pts.append(a)
+        d = _base_p1(); d.update(sweep="S1d", n=n, direction="deflate"); pts.append(d)
         b = _base_p2(); b.update(sweep="P2size", n=n); pts.append(b)
     for deg in (4, 8, 12, 20, 30, 40):                     # density (radius) at n=2000
         c = _base_p1(); c.update(sweep="S2", n=2000, deg=deg); pts.append(c)
@@ -225,19 +227,26 @@ def _child_rgg(fn, CC, verify_fn, conn):
 
 
 def run_isolated_rgg(fn, CC, verify_fn, timeout_s):
+    # DRAIN-AS-YOU-WAIT: _child_rgg ships the cover, which at n=3000 (esp. deflate, thousands of edges) exceeds
+    # the ~64KB OS pipe buffer. poll()+recv() (not p.join() first) drains the pipe so the child's send() can't
+    # block -> avoids the deadlock that truncated the real-data run (see real_harness.run_isolated).
     ctx = mp.get_context("fork")
     parent_conn, child_conn = ctx.Pipe(duplex=False)
     p = ctx.Process(target=_child_rgg, args=(fn, CC, verify_fn, child_conn))
     t0 = time.perf_counter()
     p.start()
-    child_conn.close()
-    p.join(timeout_s)
-    if p.is_alive():
-        p.terminate(); p.join()
+    child_conn.close()                                        # read-only parent -> poll() sees EOF if child dies
+    if not parent_conn.poll(timeout_s):                       # nothing within the cap -> still computing -> kill
+        p.terminate(); p.join(5)
+        if p.is_alive():
+            p.kill(); p.join()
         return {"status": "timeout", "wall": time.perf_counter() - t0}
-    if parent_conn.poll():
-        return parent_conn.recv()
-    return {"status": "killed" if (p.exitcode and p.exitcode != 0) else "error:noresult"}
+    try:
+        out = parent_conn.recv()                              # child mid-send -> our read drains + unblocks it
+    except EOFError:                                          # child died before sending (segfault / OOM-kill)
+        out = {"status": "killed"}
+    p.join()
+    return out
 
 
 # ----------------------------------------------------------------------------
@@ -310,7 +319,7 @@ def _triplet_acc(DT, DX, tri):
 RGG_META_FIELDS = ("task", "part", "sweep", "model", "mode", "n", "dim", "radius", "k", "deg",
                    "break_type", "direction", "magnitude", "frac_q", "n_jitter", "jitter", "subset_s",
                    "sample", "seed", "V", "E", "w_min", "w_max", "n_components", "giant", "H", "n_corrupted")
-RGG_RUN_FIELDS = list(RUN_FIELDS) + ["edit_precision", "edit_recall"]
+RGG_RUN_FIELDS = list(RUN_FIELDS) + ["edit_precision", "edit_recall"]   # RUN_FIELDS already carries light_frac
 KNN_FIELDS = ["knn_k", "jaccard_TC", "jaccard_TF", "recall_TF", "lift", "triplet_acc_C", "triplet_acc_F"]
 RGG_CSV_FIELDS = list(RGG_META_FIELDS) + ["algo", "variant"] + RGG_RUN_FIELDS + KNN_FIELDS
 
@@ -322,11 +331,13 @@ def _run(cfg, s, task_index, outdir, drop_ilp=False):
 
     comps = [H.subgraph(c).copy() for c in nx.connected_components(H)]
     giant = max((c.number_of_nodes() for c in comps), default=0)
-    nonmetric, total_H = [], 0
+    nonmetric, heavy_union = [], set()                         # heavy_union = DOMR set (edges w>detour)
     for CC in comps:
-        h = len(domr_alg(CC)); total_H += h
-        if h > 0:
+        hs = {_norm(u, v) for (u, v) in domr_alg(CC)}
+        if hs:
             nonmetric.append(CC)
+            heavy_union |= hs
+    total_H = len(heavy_union)
     ws = [d["weight"] for _, _, d in H.edges(data=True)]
 
     meta = dict(task=task_index, part=cfg["part"], sweep=cfg["sweep"], model="rgg", mode=cfg["mode"],
@@ -378,6 +389,8 @@ def _run(cfg, s, task_index, outdir, drop_ilp=False):
                 inter = len(cover_union & corr)
                 base["edit_precision"] = (inter / len(cover_union)) if cover_union else None
                 base["edit_recall"] = (inter / len(corr)) if corr else None
+                base["light_frac"] = (round(len(cover_union - heavy_union) / len(cover_union), 4)
+                                      if cover_union else None)   # share of cover that is NOT heavy (vs DOMR)
 
         # Part 2: emit one LONG row per k with T/C/F kNN metrics (only when a repaired graph F exists).
         if part2 and cover_union is not None and base["status"] == "ok":

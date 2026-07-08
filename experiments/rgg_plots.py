@@ -42,20 +42,20 @@ from plot_common import (FAMILY, FAMILIES, FAM_TITLE, style_map, ylab, band,    
 
 # stable panel order; label each panel by the knob it sweeps
 SWEEP_X = {
-    "S1": "n", "P2size": "n", "POCsize_inflate": "n", "POCsize_jitter": "n",
+    "S1": "n", "S1d": "n", "P2size": "n", "POCsize_inflate": "n", "POCsize_jitter": "n",
     "S2": "deg", "S2k": "k", "S3": "magnitude", "S3d": "magnitude", "S6": "magnitude",
     "S4i": "frac_q", "S4d": "frac_q", "S5a": "n_jitter", "P2n": "n_jitter",
     "S5b": "jitter", "P2j": "jitter", "S5c": "subset_s", "P2s": "subset_s",
 }
 SWEEP_TITLE = {
-    "S1": "S1 size (inflate)", "S2": "S2 density (radius)", "S2k": "S2' density (knn)",
+    "S1": "S1 size (inflate)", "S1d": "S1d size (deflate)", "S2": "S2 density (radius)", "S2k": "S2' density (knn)",
     "S3": "S3 inflate mag.", "S3d": "S3' deflate mag.", "S4i": "S4 inflate frac",
     "S4d": "S4' deflate frac", "S5a": "S5a jitter count", "S5b": "S5b jitter mag.",
     "S5c": "S5c jitter subset", "S6": "S6 mag×frac (q averaged)", "P2size": "P2 size (jitter)",
     "POCsize_inflate": "POC size (inflate)", "POCsize_jitter": "POC size (jitter)",
     "P2s": "P2 subset", "P2j": "P2 jitter mag.", "P2n": "P2 jitter count",
 }
-ORDER = ["S1", "S2", "S2k", "S3", "S3d", "S4i", "S4d", "S5a", "S5b", "S5c", "S6",
+ORDER = ["S1", "S1d", "S2", "S2k", "S3", "S3d", "S4i", "S4d", "S5a", "S5b", "S5c", "S6",
          "POCsize_inflate", "POCsize_jitter", "P2size", "P2s", "P2j", "P2n"]
 
 

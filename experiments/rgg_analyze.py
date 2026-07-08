@@ -30,7 +30,7 @@ import pandas as pd
 
 # columns to coerce to numeric (blanks -> NaN)
 NUM = ("size", "valid", "lp_bound", "exact_opt", "rounds", "cuts", "cpu", "wall", "peak_mb",
-       "min_pair_dist", "H", "n_corrupted", "edit_precision", "edit_recall",
+       "min_pair_dist", "H", "n_corrupted", "edit_precision", "edit_recall", "light_frac",
        "knn_k", "jaccard_TC", "jaccard_TF", "recall_TF", "lift", "triplet_acc_C", "triplet_acc_F",
        "n", "radius", "deg", "k", "magnitude", "frac_q", "n_jitter", "jitter", "subset_s",
        "sample", "seed", "V", "E", "w_min", "w_max", "giant")
@@ -48,7 +48,7 @@ SWEEP_X = {
 SWEEP_SERIES = {"S6": "frac_q"}                 # 2D sweep: keep the secondary knob as a line series
 
 GMR_REF_VARIANTS = {"GMR", "DOMR"}              # DOMR covers are valid GMR covers -> compare to the GMR OPT
-DIST_EDIT = ["edit_precision", "edit_recall", "size", "ratio", "ratio_domr", "cpu", "wall", "rounds", "cuts"]
+DIST_EDIT = ["edit_precision", "edit_recall", "light_frac", "size", "ratio", "ratio_domr", "cpu", "wall", "rounds", "cuts"]
 DIST_KNN = ["jaccard_TC", "jaccard_TF", "recall_TF", "lift", "triplet_acc_C", "triplet_acc_F"]
 
 

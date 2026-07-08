@@ -205,7 +205,16 @@ _RSS_MB = (1.0 / 1024.0 / 1024.0) if sys.platform == "darwin" else (1.0 / 1024.0
 
 # fields produced per (algorithm, component) run
 RUN_FIELDS = ("status", "size", "valid", "cpu", "wall", "peak_mb", "lp_bound", "exact_opt",
-              "converged", "rounds", "cuts", "oracle", "guaranteed", "full_separation", "min_pair_dist")
+              "converged", "rounds", "cuts", "oracle", "guaranteed", "full_separation", "min_pair_dist",
+              # light_frac = |cover \ heavy(DOMR)| / |cover|: fraction of the cover that is LIGHT (w<=detour).
+              # 0 => the cover is all heavy edges (GMR coincides with DOMR, e.g. inflate); >0 => GMR departs
+              # from DOMR by raising light edges (shortcut/deflate/jitter). Per-instance, computed from the
+              # cover union vs the heavy-edge union (not in _aggregate).
+              "light_frac")
+
+
+def _norm(u, v):
+    return (int(u), int(v)) if int(u) <= int(v) else (int(v), int(u))
 
 
 def _child(fn, CC, verify_fn, conn):
@@ -214,12 +223,14 @@ def _child(fn, CC, verify_fn, conn):
         cover, info = fn(CC)
         cpu, wall = time.process_time() - t_cpu, time.perf_counter() - t_wall
         if cover is None:
-            size, valid = None, None                          # pure lower bound
+            size, valid, cov = None, None, None               # pure lower bound
         else:
             size = len(cover)
             valid = int(verify_fn(CC, cover)) if verify_fn else None
+            cov = [_norm(u, v) for (u, v) in cover]            # for the per-instance light_frac (vs DOMR)
         peak_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * _RSS_MB
-        out = {"status": "ok", "size": size, "valid": valid, "cpu": cpu, "wall": wall, "peak_mb": peak_mb}
+        out = {"status": "ok", "size": size, "valid": valid, "cpu": cpu, "wall": wall, "peak_mb": peak_mb,
+               "cover": cov}
         for k in ("lp_bound", "exact_opt", "converged", "rounds", "cuts", "oracle", "guaranteed",
                   "full_separation", "min_pair_dist"):
             out[k] = info.get(k)
@@ -233,20 +244,28 @@ def _child(fn, CC, verify_fn, conn):
 
 
 def run_isolated(fn, CC, verify_fn, timeout_s):
-    """Run fn(CC) in a forked child with a wall-clock cap; return a dict with RUN_FIELDS (subset)."""
+    """Run fn(CC) in a forked child with a wall-clock cap; return a dict with RUN_FIELDS (subset).
+
+    DRAIN-AS-YOU-WAIT: _child now ships the cover, which on large/dense instances (n=3000) exceeds the ~64KB
+    OS pipe buffer. poll()+recv() (not p.join() first) lets the parent start reading so the child's send()
+    can't block -> avoids the deadlock that truncated the real-data run (see real_harness.run_isolated)."""
     ctx = mp.get_context("fork")
     parent_conn, child_conn = ctx.Pipe(duplex=False)
     p = ctx.Process(target=_child, args=(fn, CC, verify_fn, child_conn))
     t0 = time.perf_counter()
     p.start()
-    child_conn.close()                                        # parent keeps only the read end
-    p.join(timeout_s)
-    if p.is_alive():
-        p.terminate(); p.join()
+    child_conn.close()                                        # read-only parent -> poll() sees EOF if child dies
+    if not parent_conn.poll(timeout_s):                       # nothing within the cap -> still computing -> kill
+        p.terminate(); p.join(5)
+        if p.is_alive():
+            p.kill(); p.join()
         return {"status": "timeout", "wall": time.perf_counter() - t0}
-    if parent_conn.poll():
-        return parent_conn.recv()
-    return {"status": "killed" if (p.exitcode and p.exitcode != 0) else "error:noresult"}
+    try:
+        out = parent_conn.recv()                              # child mid-send -> our read drains + unblocks it
+    except EOFError:                                          # child died before sending (segfault / OOM-kill)
+        out = {"status": "killed"}
+    p.join()
+    return out
 
 
 # ----------------------------------------------------------------------------
@@ -307,12 +326,13 @@ def run_one_task(task_index, outdir, grid="full"):
     ws = [d["weight"] for _, _, d in G.edges(data=True)]
     giant = max((c.number_of_nodes() for c in comps), default=0)
 
-    nonmetric, total_H = [], 0                     # a component needs repair iff domr(CC) != empty
-    for CC in comps:
-        h = len(domr_alg(CC))
-        total_H += h
-        if h > 0:
+    nonmetric, heavy_union = [], set()             # a component needs repair iff domr(CC) != empty
+    for CC in comps:                               # heavy_union = the DOMR set (edges w>detour) across comps
+        hs = {_norm(u, v) for (u, v) in domr_alg(CC)}
+        if hs:
             nonmetric.append(CC)
+            heavy_union |= hs
+    total_H = len(heavy_union)
 
     meta = dict(task=task_index, exp=pt["exp"], model=pt["model"], n=pt["n"],
                 p=pt.get("p"), alpha=pt.get("alpha"), sample=s, seed=seed,
@@ -340,6 +360,10 @@ def run_one_task(task_index, outdir, grid="full"):
             results = [run_isolated(fn, CC, VERIFY[vkey], to) for CC in nonmetric]
             row.update(_aggregate(results))
             elapsed += row.get("wall") or 0.0
+            covers = [set(r["cover"]) for r in results if r.get("cover") is not None]
+            if covers:                                 # light_frac = share of the cover that is NOT a heavy edge
+                cu = set().union(*covers)
+                row["light_frac"] = round(len(cu - heavy_union) / len(cu), 4) if cu else None
         rows.append(row)
 
     os.makedirs(outdir, exist_ok=True)

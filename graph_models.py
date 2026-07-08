@@ -267,8 +267,10 @@ def break_metric_graph(G, frac_q=0.1, direction="inflate", magnitude=2.0):
             if not common:
                 continue                                        # no 2-path -> nothing to shortcut
             gap = max(abs(G[u][c]["weight"] - G[c][v]["weight"]) for c in common)
-            if gap <= 1:
-                continue                                        # no room below the gap
+            if gap <= (1 if integer else 1e-9):
+                continue                                        # need room below the gap: integer >=1, float >0
+                                                                # (float RGG weights are all <1 -- the old `<=1`
+                                                                # guard silently skipped EVERY deflate edge)
             _set(u, v, gap / magnitude)
             corrupted.add(_norm(u, v))
         else:

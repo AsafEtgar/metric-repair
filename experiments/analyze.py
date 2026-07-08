@@ -31,7 +31,7 @@ def load(path):
         df = pd.read_csv(path)
     # coerce the tri-state / numeric columns (blanks -> NaN)
     for c in ("size", "valid", "lp_bound", "exact_opt", "rounds", "cuts", "cpu", "wall", "peak_mb",
-              "min_pair_dist", "n", "p", "alpha", "V", "E", "w_min", "w_max", "giant", "H", "seed"):
+              "min_pair_dist", "n", "p", "alpha", "V", "E", "w_min", "w_max", "giant", "H", "seed", "light_frac"):
         if c in df:
             df[c] = pd.to_numeric(df[c], errors="coerce")
     for c in ("converged", "guaranteed", "full_separation"):
@@ -118,7 +118,7 @@ def _q(p):
 # Columns summarised with the full distribution (median, IQR, mean, std) over the samples of a config.
 # size/ratio/ratio_domr = the science; H = |DOMR| non-metricity magnitude; ref = the absolute OPT (plot
 # OPT-vs-alpha directly); cpu/wall = runtime (IQR -> error bars); rounds/cuts = cutting-plane work.
-DIST_COLS = ["size", "ratio", "ratio_domr", "H", "ref", "cpu", "wall", "rounds", "cuts"]
+DIST_COLS = ["size", "ratio", "ratio_domr", "light_frac", "H", "ref", "cpu", "wall", "rounds", "cuts"]
 
 
 def aggregate(df):
