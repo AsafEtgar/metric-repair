@@ -142,6 +142,17 @@ def _points_large():
         c = _base_p1(); c.update(sweep="S2", n=2000, deg=deg); pts.append(c)
     for k in (8, 12, 20, 30):                              # density (knn) at n=2000
         c = _base_p1(); c.update(sweep="S2k", n=2000, mode="knn", k=k); pts.append(c)
+    # kNN RECOVERY under SHORTCUT (deflate) corruption -- the regime where repair actually helps downstream
+    # (too-long inflate edges are invisible to shortest paths, so only shortcuts distort kNN and can be
+    # repaired). Part-2 pipeline (T/C/F kNN + lift) runs for any break; deflate reweight instead of jitter.
+    # Per-algo lift also exposes the variant dissociation: GMR/IOMR fix the light shortcut -> help; DOMR
+    # (decrease-only, touches only the heavy victims) -> ~0 lift. n=1000 (kNN meaningful, cost modest).
+    for q in (0.02, 0.05, 0.10, 0.20, 0.30):               # recovery vs deflate FRACTION (magnitude fixed 5)
+        e = _base_p2(); e.update(sweep="P2df", n=1000, break_type="reweight",
+                                 direction="deflate", frac_q=q, magnitude=5.0); pts.append(e)
+    for m in (2.0, 3.0, 5.0, 10.0):                        # recovery vs deflate MAGNITUDE (fraction fixed .1)
+        e = _base_p2(); e.update(sweep="P2dm", n=1000, break_type="reweight",
+                                 direction="deflate", frac_q=0.10, magnitude=float(m)); pts.append(e)
     return pts
 
 

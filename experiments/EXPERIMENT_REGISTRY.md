@@ -86,22 +86,40 @@ n ∈ {1000, 1200, 1400, 1600, 1800, 2000, 2200, 2400, 2600, 2800, 3000}   # ste
 
 ### 3.1 The grids
 
-| campaign | model / weights | sweep | fixed | measures |
-|---|---|---|---|---|
-| **RGG size / P1** | RGG float, `radius`, deg=12, dim=2 | `n` ladder | inflate, frac_q=.10, mag=3 | `ratio_domr`, edit prec/recall vs n |
-| **RGG size / P2** | " | `n` ladder | jitter nj=8, jitter=2·r, s=.5 | kNN recovery (lift, triplet) vs n |
-| **RGG density (radius)** | RGG float, `radius` | mean deg ∈ {4,8,12,20,30,40} | **n=2000**, inflate | `ratio_domr` vs density |
-| **RGG density (knn)** | RGG float, **`knn`** | k ∈ {8,12,20,30} | **n=2000**, inflate | knn-topology density variant |
-| **GEO / exp1** | coupled geometric, int | `n` ladder | **p ∈ {0.3, 0.5, 0.8}** | `ratio_domr` vs n, planted breaks |
-| **GEO / exp2** | decoupled geometric, int | **α: 4/5 → 1/3** (`p = 2·n^−α`) | **n=2000** (to match RGG density) | density onset + algo separation |
+| campaign | sweep-id | model / weights | sweep | fixed | measures |
+|---|---|---|---|---|---|
+| **RGG size / P1 inflate** | S1 | RGG float, `radius`, deg=12, dim=2 | `n` ladder | inflate, frac_q=.10, mag=3 | `ratio_domr`, `light_frac`, edit vs n |
+| **RGG size / P1 deflate** | S1d | " | `n` ladder | **deflate**, frac_q=.10, mag=3 | `light_frac`, `ratio_domr` (GMR ≠ DOMR) |
+| **RGG size / P2 jitter** | P2size | " | `n` ladder | jitter nj=8, jitter=2·r, s=.5 | kNN recovery (lift, triplet) vs n |
+| **RGG density (radius)** | S2 | RGG float, `radius` | deg ∈ {4,8,12,20,30,40} | **n=2000**, inflate | `ratio_domr` vs density |
+| **RGG density (knn)** | S2k | RGG float, **`knn`** | k ∈ {8,12,20,30} | **n=2000**, inflate | knn-topology density variant |
+| **RGG kNN recovery** ★ | P2df, P2dm | RGG float, `radius` | **deflate** frac_q ∈ {.02..0.3} · mag ∈ {2..10} | **n=1000** | **kNN lift by variant** — where repair HELPS |
+| **GEO / exp1** | exp1 | coupled geometric, int | `n` ladder | **p ∈ {0.3, 0.5, 0.8}** | `ratio_domr`, `light_frac` vs n |
+| **GEO / exp2** | exp2b | decoupled geometric, int | **α: 4/5 → 1/3** (`p = 2·n^−α`) | **n=2000** | density onset + algo separation |
+
+★ **The kNN-recovery arm is the "does repair help downstream?" experiment.** kNN/triplet run on shortest-path
+distance, so a too-long (inflate) edge is invisible to them and repairing it can't change kNN — that's why every
+earlier lift was ≤0 (we only ran inflate + mild jitter). SHORTCUT (deflate) corruption is the regime where
+repair helps: measured **exact-GMR lift +0.41** at severe deflate (n=300), and a clean **variant dissociation** —
+GMR/IOMR recover (they raise/drop the light shortcut) while **DOMR gives exactly 0** (decrease-only touches only
+the heavy victims, off the shortest paths). `light_frac` also predicts recovery quality (low-light covers can hurt).
 
 **exp2 detail:** `p = 2·n^{−α}`, α **decreasing** from 4/5 to 1/3 over ~16 points (linspace), at **n=2000** (same
 baseline as the RGG density sweep). The ×2 keeps the graph connected further into the sweep, and lowering α
 densifies it: at n=2000 this runs **p ≈ 0.005 → 0.16** (mean degree ≈ 9 → ≈ 320, **up to ~320k edges**) — the
 dense end has many broken cycles to expose algorithm separation, and is the single heaviest slice of the run.
 
-**Config count:** 11 (RGG-P1) + 11 (RGG-P2) + 6 (RGG deg) + 4 (RGG knn) + 33 (geo exp1: 3 p × 11 n) +
-16 (geo exp2) = **81 configs**.
+**Config count:** RGG-large = 11 (S1) + 11 (S1d) + 11 (P2size) + 6 (S2) + 4 (S2k) + 5 (P2df) + 4 (P2dm) =
+**52 configs / 1040 tasks**. GEO-large = 33 (exp1) + 16 (exp2b) = **49 configs / 980 tasks**. Total **101
+configs / 2020 tasks** @ 20 seeds.
+
+> ⚠️ **Probe finding — GEO exp1 density blows up (must fix before running).** In the coupled-geometric model
+> `p` is an **edge probability**, so exp1 at high p × high n is enormous: measured **n=3000, p=0.5 → 2.25M
+> edges** (p=0.8 → ~3.6M), where **even `domr` times out** and it is effectively intractable. Dense geometric
+> is only feasible to **~n≤1000** (n=1000,p=0.5 ≈ 250k edges ≈ ripe-scale, ~10–16 min/task). RGG (sparse,
+> deg=12) is the one that genuinely reaches n=3000 (~890 MB peak, `domr` ~3 s; the P2/kNN pass is ~17 min at
+> n=3000). GEO exp2's dense tail (n=2000, ~317k edges, |H|=79k) is likewise heavy (all heuristics > 120 s).
+> **Decision needed:** cap the GEO exp1 ladder (e.g. n ≤ 1000), and/or lower p at large n. RGG is unaffected.
 
 ### 3.2 Suite, seeds, cost, memory, outputs
 
