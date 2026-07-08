@@ -75,61 +75,62 @@ n=3000 is the ceiling *without* the `all_pairs_distances` matrix refactor (defer
 
 ## 3. Large-scale design (n = 1000…3000)  — PLANNED, not yet run
 
-A **dedicated large-n campaign**, not an extension of the small grid: one **size ladder** swept at a fixed
-baseline corruption, on both models. Because **every n > 800, the ILP gates off entirely** — there is no exact
-OPT at this scale, so the suite is the **heuristics + LP-bound references + `domr`**, and the primary axes are
-**`ratio_domr = size/|H|` (quality) and wall-time (cost) vs n**. `rsp` methods dropped throughout.
-
-### 3.1 The size ladder (the experiment)
+A **dedicated large-n campaign**, not an extension of the small grid. **No ILP at all** (excluded outright —
+it can't converge at this scale), so the suite is **heuristics + LP-bound references + `domr`**; `rsp` dropped
+throughout. Primary axes: **`ratio_domr = size/|H|` (quality) and wall-time (cost) vs n**. Size ladder:
 
 ```
 n ∈ {1000, 1200, 1400, 1600, 1800, 2000, 2200, 2400, 2600, 2800, 3000}   # step 200 → 11 points
 ```
-(1000→3000 by 200 is **11** points; drop 3000 for a round 10 if preferred.)
 
-| campaign | model / weights | sweep | fixed baseline | what it measures |
+### 3.1 The grids
+
+| campaign | model / weights | sweep | fixed | measures |
 |---|---|---|---|---|
-| **RGG-LARGE / P1** | RGG float, `radius`, deg=12, dim=2 | `n` ladder | inflate, frac_q=.10, mag=3 | `ratio_domr`, edit precision/recall vs n |
-| **RGG-LARGE / P2** | " | `n` ladder | jitter nj=8, jitter=2·r, s=.5 | kNN recovery (lift, triplet) vs n |
-| **GEO-LARGE / exp1** | coupled geometric, int weights | `n` ladder | p ∈ {0.3, 0.5} | `ratio_domr` vs n, planted breaks |
+| **RGG size / P1** | RGG float, `radius`, deg=12, dim=2 | `n` ladder | inflate, frac_q=.10, mag=3 | `ratio_domr`, edit prec/recall vs n |
+| **RGG size / P2** | " | `n` ladder | jitter nj=8, jitter=2·r, s=.5 | kNN recovery (lift, triplet) vs n |
+| **RGG density (radius)** | RGG float, `radius` | mean deg ∈ {4,8,12,20,30,40} | **n=2000**, inflate | `ratio_domr` vs density |
+| **RGG density (knn)** | RGG float, **`knn`** | k ∈ {8,12,20,30} | **n=2000**, inflate | knn-topology density variant |
+| **GEO / exp1** | coupled geometric, int | `n` ladder | **p ∈ {0.3, 0.5, 0.8}** | `ratio_domr` vs n, planted breaks |
+| **GEO / exp2** | decoupled geometric, int | **α: 4/5 → 1/3** (`p = 2·n^−α`) | **n=1500** | density onset + algo separation |
 
-= 11 (RGG P1) + 11 (RGG P2) + 22 (geo, 2 p × 11) = **44 configs**. The single fixed corruption per campaign
-keeps this a clean "how do the heuristics scale to n=3000?" study on both quality and runtime.
+**exp2 detail:** `p = 2·n^{−α}`, α **decreasing** from 4/5 to 1/3 over ~16 points (linspace). The ×2 keeps the
+graph connected further into the sweep, and lowering α densifies it: at n=1500 this runs **p ≈ 0.006 → 0.175**
+(mean degree ≈ 9 → ≈ 260) — the dense end has many more broken cycles, to expose algorithm separation.
+
+**Config count:** 11 (RGG-P1) + 11 (RGG-P2) + 6 (RGG deg) + 4 (RGG knn) + 33 (geo exp1: 3 p × 11 n) +
+16 (geo exp2) = **81 configs**.
 
 ### 3.2 Suite, seeds, cost, memory, outputs
 
-- **Suite:** the scale suite (§2) with **ILP fully skipped** (all n > 800) → RGG ~13 algos, geometric ~13
-  (rsp dropped). References = `domr` (|H|), `gmr_lp_naive`, `iomr_lp_naive`.
-- **Seeds: 20 (flat).** All points are "large," so no tapering; drop to 15 if the probe says it's pricey.
-- **Cost:** ≈ **100–120 core-h** (P2/kNN is the heaviest — 3× shortest-path passes T/C/F). *Extrapolated from
-  n ≤ 500; the probe (§4.3) replaces this with measured numbers before committing hours.*
-- **Memory: 16 GB/task**, bump to **24–32 GB** if the probe shows `bestofk`/covering-LP blowing up at n ≥ 2000.
-  `day` partition, 1 core/task, `--max-jobs 64`, walltime **04:00:00** (~10–15 min/instance at n=3000).
+- **Suite:** the scale suite (§2) **minus the two ILP entries entirely** → RGG ~13 algos, geometric ~13
+  (rsp also dropped). References = `domr` (|H|), `gmr_lp_naive`, `iomr_lp_naive`.
+- **Seeds: 20 (flat)** — all points are large, so no tapering; drop to 15 if the probe says it's pricey.
+- **Cost:** ≈ **140–200 core-h** (up from the pure-ladder estimate: exp1 is now 3 densities and exp2's
+  **dense end — n=1500, p≈0.175, ~200k edges — is the single heaviest slice**: APSP + covering-LP on that many
+  edges is minutes/instance). *Extrapolated; the probe (§4.3) — which must include the exp2 dense end — sets
+  the real number.*
+- **Memory: 16 GB/task**, bump to **24–32 GB** if the probe shows the dense exp2 / `bestofk` blowing up.
+  `day` partition, 1 core/task, `--max-jobs 64`, walltime **04:00:00**.
 - **Outputs:** `results_rgg_large/` and `results_geo_large/` (+ `analysis/summary_*_large.csv`,
   `analysis/figs/{rgg,geometric}_large/`); add both dirs to `.gitignore` like the others.
-
-### 3.3 Optional add-on (only if we want "does the regime hold at scale?")
-
-A compact OFAT battery at **one fixed n = 2000** — density (deg∈{4,8,12,20,30,40}), inflate frac_q, magnitude,
-and jitter — to check whether the RGG-full findings (pivot/left_edge exploding on jitter, inflate-is-hard)
-persist at scale. Left OUT of the first pass to keep this "just a large-scale experiment"; ~25 extra configs.
 
 ---
 
 ## 4. Before launching
 
 ### 4.1 Harness edits required (small, scoped)
-1. Add a **`large` grid**: to `rgg_harness.py` a `LARGE_NS = range(1000, 3001, 200)` size sweep (P1 inflate +
-   P2 jitter at the baselines above) and to `harness.py` a `_points_large` (exp1 ladder × p∈{.3,.5}).
-2. **Exclude `gmr_ilp`/`iomr_ilp`** from the large suite (every n > 800 → they'd only time out); `rsp` already
-   dropped on float and excluded here on geometric too. Optional: tighten the `l1sep` cap.
-3. New runners/dirs: `--grid large` → `results_rgg_large/` / `results_geo_large/`; `.gitignore` entries.
+1. **`rgg_harness.py` `large` grid:** `LARGE_NS = range(1000, 3001, 200)` size sweep (P1 inflate + P2 jitter),
+   plus density at n=2000 in **both** `radius` (deg∈{4,8,12,20,30,40}) and `knn` (k∈{8,12,20,30}) modes.
+2. **`harness.py` `_points_large`:** exp1 coupled-geometric over the ladder × **p∈{.3,.5,.8}**; exp2
+   decoupled-geometric at **n=1500** with **p=2·n^{−α}**, α = `linspace(4/5, 1/3, 16)`.
+3. **Exclude `gmr_ilp`/`iomr_ilp` outright** from the large suite; `rsp` dropped (float RGG + geometric here).
+4. New runners/dirs: `--grid large` → `results_rgg_large/` / `results_geo_large/`; `.gitignore` entries.
 
 ### 4.2 Open decisions to confirm (flag any before I wire it)
 - **11 points** (keep n=3000) or **10** (drop 3000)?
-- **20 seeds** (flat) or 15, given the large-n cost?
-- **Both models** in this first large run (RGG + geometric), or RGG only?
-- Size-ladder only, or also the **optional OFAT-at-n=2000** battery (§3.3)?
+- **20 seeds** (flat) or 15, given the heavier cost (exp1×3 densities + the dense exp2 tail)?
+- exp2: **16 α-points** across 4/5→1/3 ok, and confirm the **×2** factor on `p` (keeps it connected + denser)?
 
 ### 4.3 Probe first (per the STATUS §3 practice)
 Run **one instance** at n ∈ {1000, 2000, 3000} through the scale suite, logging per-algo wall + `peak_mb`,
