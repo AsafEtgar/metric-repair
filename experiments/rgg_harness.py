@@ -125,8 +125,26 @@ def _points_poc():
     return pts
 
 
-GRIDS = {"full": POINTS_RGG, "poc": _points_poc()}
-SAMPLES = {"full": N_SAMPLES, "poc": 30}
+LARGE_NS = tuple(range(1000, 3001, 200))                   # 1000..3000 step 200 -> 11 points
+
+
+def _points_large():
+    """Large-scale grid (see EXPERIMENT_REGISTRY.md §3): the n-ladder swept at a fixed baseline (P1 inflate +
+    P2 jitter), plus density at n=2000 in both radius and knn modes. Reuses the S1/P2size/S2/S2k sweep ids so
+    rgg_analyze/rgg_plots work unchanged. No ILP at this scale (dropped in build_suite_rgg via drop_ilp)."""
+    pts = []
+    for n in LARGE_NS:                                      # size ladder: P1 inflate + P2 jitter (kNN)
+        a = _base_p1(); a.update(sweep="S1", n=n); pts.append(a)
+        b = _base_p2(); b.update(sweep="P2size", n=n); pts.append(b)
+    for deg in (4, 8, 12, 20, 30, 40):                     # density (radius) at n=2000
+        c = _base_p1(); c.update(sweep="S2", n=2000, deg=deg); pts.append(c)
+    for k in (8, 12, 20, 30):                              # density (knn) at n=2000
+        c = _base_p1(); c.update(sweep="S2k", n=2000, mode="knn", k=k); pts.append(c)
+    return pts
+
+
+GRIDS = {"full": POINTS_RGG, "poc": _points_poc(), "large": _points_large()}
+SAMPLES = {"full": N_SAMPLES, "poc": 30, "large": 20}
 
 
 def all_tasks(grid="full"):
@@ -140,8 +158,9 @@ def task_seed(cfg, s):
     return zlib.crc32(key.encode()) & 0x7FFFFFFF
 
 
-def build_suite_rgg(seed):
-    return [e for e in build_suite(seed) if e[0] not in DROP_RSP]
+def build_suite_rgg(seed, drop_ilp=False):
+    drop = DROP_RSP | ({"gmr_ilp", "iomr_ilp"} if drop_ilp else set())
+    return [e for e in build_suite(seed) if e[0] not in drop]
 
 
 # ----------------------------------------------------------------------------
@@ -296,7 +315,7 @@ KNN_FIELDS = ["knn_k", "jaccard_TC", "jaccard_TF", "recall_TF", "lift", "triplet
 RGG_CSV_FIELDS = list(RGG_META_FIELDS) + ["algo", "variant"] + RGG_RUN_FIELDS + KNN_FIELDS
 
 
-def _run(cfg, s, task_index, outdir):
+def _run(cfg, s, task_index, outdir, drop_ilp=False):
     seed = task_seed(cfg, s)
     T, H, corrupted, jittered, radius, jitter_abs = generate_rgg(cfg, seed)
     corr = {_norm(u, v) for (u, v) in corrupted}
@@ -336,7 +355,7 @@ def _run(cfg, s, task_index, outdir):
         tacc_C = _triplet_acc(DT, DC, tri)
 
     rows, elapsed = [], 0.0
-    for (name, variant, vkey, n_max, region_gated, fn) in build_suite_rgg(seed):
+    for (name, variant, vkey, n_max, region_gated, fn) in build_suite_rgg(seed, drop_ilp):
         base = {**meta, "algo": name, "variant": variant,
                 **{f: None for f in RGG_RUN_FIELDS}, **{f: None for f in KNN_FIELDS}}
         cover_union = None
@@ -389,4 +408,4 @@ def _run(cfg, s, task_index, outdir):
 
 def run_one_rgg_task(task_index, outdir, grid="full"):
     cfg, s = all_tasks(grid)[task_index]
-    return _run(cfg, s, task_index, outdir)
+    return _run(cfg, s, task_index, outdir, drop_ilp=(grid == "large"))

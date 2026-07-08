@@ -90,9 +90,29 @@ def _points_small():
     return pts
 
 
+# Large-scale grid (see EXPERIMENT_REGISTRY.md §3): no exact solver at this scale -> DROP_LARGE strips the ILP
+# AND the rsp methods (O(w_max*n^2)); the suite becomes heuristics + LP-bound references + domr. exp1 sweeps a
+# large n-ladder at three densities; exp2 (decoupled) sits at n=2000 with p = 2*n^-alpha, alpha 4/5 -> 1/3
+# (the x2 keeps it connected while densifying to ~320k edges, to surface algorithm separation on dense graphs).
+LARGE_NS = tuple(range(1000, 3001, 200))               # 1000..3000 step 200 -> 11 points
+DROP_LARGE = {"gmr_ilp", "iomr_ilp", "gmr_lp_rsp", "iomr_lp_rsp", "iomr_thr_rsp"}
+
+
+def _points_large():
+    pts = []
+    for p in (0.3, 0.5, 0.8):                           # exp1: coupled geometric, planted breaks, 3 densities
+        for n in LARGE_NS:
+            pts.append(dict(exp="exp1", model="geometric", n=n, p=float(p), alpha=None))
+    n2 = 2000                                          # exp2: decoupled geometric density onset at fixed n
+    for a in np.linspace(4.0 / 5.0, 1.0 / 3.0, 16):    # alpha 0.8 -> 0.333; p = 2*n^-alpha (denser than exp2b)
+        pts.append(dict(exp="exp2b", model="decoupled_geometric", n=n2,
+                        p=float(2.0 * n2 ** (-a)), alpha=float(a)))
+    return pts
+
+
 POINTS = _points()
-GRIDS = {"full": POINTS, "small": _points_small()}
-SAMPLE_COUNT = {"full": N_SAMPLES, "small": 30}
+GRIDS = {"full": POINTS, "small": _points_small(), "large": _points_large()}
+SAMPLE_COUNT = {"full": N_SAMPLES, "small": 30, "large": 20}
 
 
 def all_tasks(grid="full"):
@@ -300,9 +320,12 @@ def run_one_task(task_index, outdir, grid="full"):
                 w_min=(min(ws) if ws else 0), w_max=(max(ws) if ws else 0),
                 n_components=len(comps), giant=giant, H=total_H)
 
+    suite = build_suite(seed)
+    if grid == "large":                             # scale suite: no exact solver, no rsp (see DROP_LARGE)
+        suite = [e for e in suite if e[0] not in DROP_LARGE]
     rows = []
     elapsed = 0.0
-    for (name, variant, vkey, n_max, region_gated, fn) in build_suite(seed):
+    for (name, variant, vkey, n_max, region_gated, fn) in suite:
         row = {**meta, "algo": name, "variant": variant, **{k: None for k in RUN_FIELDS}}
         if elapsed >= TASK_BUDGET_S:               # ran out of per-task budget -> skip the rest
             row["status"] = "skipped_time"
