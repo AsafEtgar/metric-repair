@@ -100,13 +100,19 @@ DROP_LARGE = {"gmr_ilp", "iomr_ilp", "gmr_lp_rsp", "iomr_lp_rsp", "iomr_thr_rsp"
 
 def _points_large():
     pts = []
-    for p in (0.3, 0.5, 0.8):                           # exp1: coupled geometric, planted breaks, 3 densities
-        for n in LARGE_NS:
+    # exp1: coupled geometric, planted breaks. p is an EDGE PROBABILITY, so these graphs are DENSE -> the
+    # ladder is capped at n<=1500 (n=2000,p=0.5 would be ~1M edges, where even domr times out; probe finding).
+    # p in {0.3, 0.5}; ~edges = p*n^2/2 -> at most 0.5*1500^2/2 = 562k (heavy but tractable; domr+LP land).
+    for p in (0.3, 0.5):
+        for n in (1000, 1250, 1500):
             pts.append(dict(exp="exp1", model="geometric", n=n, p=float(p), alpha=None))
-    n2 = 2000                                          # exp2: decoupled geometric density onset at fixed n
-    for a in np.linspace(4.0 / 5.0, 1.0 / 3.0, 16):    # alpha 0.8 -> 0.333; p = 2*n^-alpha (denser than exp2b)
-        pts.append(dict(exp="exp2b", model="decoupled_geometric", n=n2,
-                        p=float(2.0 * n2 ** (-a)), alpha=float(a)))
+    # exp2: decoupled geometric density ONSET, p = 2*n^-alpha (alpha 4/5 -> 1/3, denser than the small exp2b),
+    # swept over n x alpha. Density is alpha-controlled, so the sparse-alpha / n=1000 points are light; only the
+    # dense corner (n=2000, alpha~1/3 -> ~317k edges) is heavy, where heuristics fall back to the LP bound.
+    for n2 in (1000, 1500, 2000):
+        for a in np.linspace(4.0 / 5.0, 1.0 / 3.0, 12):
+            pts.append(dict(exp="exp2b", model="decoupled_geometric", n=n2,
+                            p=float(2.0 * n2 ** (-a)), alpha=float(a)))
     return pts
 
 

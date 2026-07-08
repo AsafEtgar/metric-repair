@@ -94,8 +94,8 @@ n ∈ {1000, 1200, 1400, 1600, 1800, 2000, 2200, 2400, 2600, 2800, 3000}   # ste
 | **RGG density (radius)** | S2 | RGG float, `radius` | deg ∈ {4,8,12,20,30,40} | **n=2000**, inflate | `ratio_domr` vs density |
 | **RGG density (knn)** | S2k | RGG float, **`knn`** | k ∈ {8,12,20,30} | **n=2000**, inflate | knn-topology density variant |
 | **RGG kNN recovery** ★ | P2df, P2dm | RGG float, `radius` | **deflate** frac_q ∈ {.02..0.3} · mag ∈ {2..10} | **n=1000** | **kNN lift by variant** — where repair HELPS |
-| **GEO / exp1** | exp1 | coupled geometric, int | `n` ladder | **p ∈ {0.3, 0.5, 0.8}** | `ratio_domr`, `light_frac` vs n |
-| **GEO / exp2** | exp2b | decoupled geometric, int | **α: 4/5 → 1/3** (`p = 2·n^−α`) | **n=2000** | density onset + algo separation |
+| **GEO / exp1** | exp1 | coupled geometric, int | n ∈ {1000, 1250, 1500} | **p ∈ {0.3, 0.5}** | `ratio_domr`, `light_frac` vs n |
+| **GEO / exp2** | exp2b | decoupled geometric, int | **n ∈ {1000,1500,2000} × α: 4/5→1/3** (`p=2·n^−α`) | — | density onset + separation, vs n |
 
 ★ **The kNN-recovery arm is the "does repair help downstream?" experiment.** kNN/triplet run on shortest-path
 distance, so a too-long (inflate) edge is invisible to them and repairing it can't change kNN — that's why every
@@ -104,22 +104,24 @@ repair helps: measured **exact-GMR lift +0.41** at severe deflate (n=300), and a
 GMR/IOMR recover (they raise/drop the light shortcut) while **DOMR gives exactly 0** (decrease-only touches only
 the heavy victims, off the shortest paths). `light_frac` also predicts recovery quality (low-light covers can hurt).
 
-**exp2 detail:** `p = 2·n^{−α}`, α **decreasing** from 4/5 to 1/3 over ~16 points (linspace), at **n=2000** (same
-baseline as the RGG density sweep). The ×2 keeps the graph connected further into the sweep, and lowering α
-densifies it: at n=2000 this runs **p ≈ 0.005 → 0.16** (mean degree ≈ 9 → ≈ 320, **up to ~320k edges**) — the
-dense end has many broken cycles to expose algorithm separation, and is the single heaviest slice of the run.
+**exp2 detail:** `p = 2·n^{−α}`, α **decreasing** from 4/5 to 1/3 (12 points), **swept over n ∈ {1000,1500,2000}**.
+The ×2 keeps it connected further in; lowering α densifies it. Density is α-controlled so most points are light
+(α=0.8 → ~4–9k edges); only the dense corner (n=2000, α≈1/3 → **~317k edges**) is heavy — there heuristics fall
+back to the LP bound / time out, but `domr` (≈9 s) and `ratio_domr` still land.
+
+**GEO exp1 is capped at n ≤ 1500** because its `p` is an edge probability (dense): edges ≈ p·n²/2, so the
+heaviest config is p=0.5,n=1500 ≈ **562k edges** (≈ ripe-scale, tractable); n=2000,p=0.5 would be ~1M and was
+dropped (even `domr` times out there — probe finding).
 
 **Config count:** RGG-large = 11 (S1) + 11 (S1d) + 11 (P2size) + 6 (S2) + 4 (S2k) + 5 (P2df) + 4 (P2dm) =
-**52 configs / 1040 tasks**. GEO-large = 33 (exp1) + 16 (exp2b) = **49 configs / 980 tasks**. Total **101
-configs / 2020 tasks** @ 20 seeds.
+**52 configs / 1040 tasks**. GEO-large = 6 (exp1) + 36 (exp2b: 3 n × 12 α) = **42 configs / 840 tasks**. Total
+**94 configs / 1880 tasks** @ 20 seeds.
 
-> ⚠️ **Probe finding — GEO exp1 density blows up (must fix before running).** In the coupled-geometric model
-> `p` is an **edge probability**, so exp1 at high p × high n is enormous: measured **n=3000, p=0.5 → 2.25M
-> edges** (p=0.8 → ~3.6M), where **even `domr` times out** and it is effectively intractable. Dense geometric
-> is only feasible to **~n≤1000** (n=1000,p=0.5 ≈ 250k edges ≈ ripe-scale, ~10–16 min/task). RGG (sparse,
-> deg=12) is the one that genuinely reaches n=3000 (~890 MB peak, `domr` ~3 s; the P2/kNN pass is ~17 min at
-> n=3000). GEO exp2's dense tail (n=2000, ~317k edges, |H|=79k) is likewise heavy (all heuristics > 120 s).
-> **Decision needed:** cap the GEO exp1 ladder (e.g. n ≤ 1000), and/or lower p at large n. RGG is unaffected.
+> **Probe-measured cost/memory** (per instance, at the heavy end): RGG scales cleanly to **n=3000** (~890 MB
+> peak, `domr` ~3 s; the P2/kNN pass ~17 min). GEO edge counts (≈ p·n²/2) are the constraint — exp1 capped at
+> **n≤1500** (heaviest p=0.5,n=1500 ≈ 562k edges; the dropped n=3000,p=0.5 was ~2.25M where even `domr` times
+> out), exp2's dense corner (n=2000, α≈1/3 ≈ 317k edges, `domr` ~9 s) heuristics fall back to the LP bound.
+> Request **16 GB / 4 h**; the dense GEO tasks are the slow ones (per-task budget caps them so the CSV lands).
 
 ### 3.2 Suite, seeds, cost, memory, outputs
 
