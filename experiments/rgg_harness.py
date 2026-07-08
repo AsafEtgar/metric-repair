@@ -28,6 +28,7 @@ from graph_models import (                                                      
     seed_all, random_geometric_metric_graph, break_metric_graph, jitter_points,
 )
 from metric_repair import domr_alg                                              # noqa: E402
+from datasets import load_edgelist                                              # noqa: E402  (real bases)
 from harness import (                                                            # noqa: E402
     build_suite, _aggregate, VERIFY, RUN_FIELDS, _RSS_MB,
     N_SAMPLES, TIMEOUT_S, ALGO_TIMEOUT, TASK_BUDGET_S, REGION_H_MAX,
@@ -118,7 +119,26 @@ def _points_part2():
     return pts
 
 
-POINTS_RGG = _points_part1() + _points_part2()
+def _points_mixed():
+    """MIXED inflate+deflate corruption (break_metric_graph direction='mixed': half the broken edges are
+    inflated=heavy/DOMR-fixable, half deflated=light shortcuts needing GMR/IOMR). The most general test --
+    it should separate the repair AXES: DOMR fixes only the inflate half, IOMR the shortcut half, GMR both.
+    Appended after part1+part2 so existing task indices are unchanged. n=300 baseline."""
+    pts = []
+    for m in (1.2, 1.5, 2, 3, 5, 10):                          # S3m mixed magnitude (repair quality)
+        c = _base_p1(); c.update(sweep="S3m", direction="mixed", magnitude=float(m)); pts.append(c)
+    for q in (0.01, 0.02, 0.05, 0.1, 0.2, 0.3):               # S4m mixed fraction (repair quality)
+        c = _base_p1(); c.update(sweep="S4m", direction="mixed", frac_q=q); pts.append(c)
+    for q in (0.02, 0.05, 0.1, 0.2, 0.3):                     # P2mf mixed-fraction kNN recovery
+        c = _base_p2(); c.update(sweep="P2mf", break_type="reweight", direction="mixed",
+                                 frac_q=q, magnitude=5.0); pts.append(c)
+    for m in (2.0, 3.0, 5.0, 10.0):                           # P2mm mixed-magnitude kNN recovery
+        c = _base_p2(); c.update(sweep="P2mm", break_type="reweight", direction="mixed",
+                                 frac_q=0.1, magnitude=float(m)); pts.append(c)
+    return pts
+
+
+POINTS_RGG = _points_part1() + _points_part2() + _points_mixed()
 
 
 def _points_poc():
@@ -160,11 +180,41 @@ def _points_large():
     for m in (2.0, 3.0, 5.0, 10.0):                        # recovery vs deflate MAGNITUDE (fraction fixed .1)
         e = _base_p2(); e.update(sweep="P2dm", n=1000, break_type="reweight",
                                  direction="deflate", frac_q=0.10, magnitude=float(m)); pts.append(e)
+    for n in LARGE_NS:                                     # MIXED size ladder (repair quality vs n)
+        c = _base_p1(); c.update(sweep="S1m", n=n, direction="mixed"); pts.append(c)
+    for q in (0.02, 0.05, 0.10, 0.20, 0.30):               # MIXED kNN recovery vs fraction (n=1000)
+        e = _base_p2(); e.update(sweep="P2mf", n=1000, break_type="reweight",
+                                 direction="mixed", frac_q=q, magnitude=5.0); pts.append(e)
+    for m in (2.0, 3.0, 5.0, 10.0):                        # MIXED kNN recovery vs magnitude (n=1000)
+        e = _base_p2(); e.update(sweep="P2mm", n=1000, break_type="reweight",
+                                 direction="mixed", frac_q=0.10, magnitude=float(m)); pts.append(e)
     return pts
 
 
-GRIDS = {"full": POINTS_RGG, "poc": _points_poc(), "large": _points_large()}
-SAMPLES = {"full": N_SAMPLES, "poc": 30, "large": 20}
+# Real-graph metric bases for the corruption-recovery experiment: (near-)metric so the base is trustworthy
+# ground truth. dimacs_ny is the headline -- a road network, exactly metric, where kNN neighborhoods ARE
+# geographic neighbors, so "recovering the topology" is directly interpretable. (name -> node count.)
+REAL_BASES = {"dimacs_ny_d": 5000, "dimacs_ny_t": 5000, "fish1_ten_lin": 1000,
+              "fish1_ten_log": 1000, "pbmc3k_cosine_knn": 2700}
+
+
+def _points_realrec():
+    """Artificial inflate / deflate / MIXED corruption injected into REAL metric bases, then repair + kNN
+    recovery -- 'can we recover the (real) topology?'. Part-2 pipeline (T=real base, C=corrupted, F=repaired)
+    over a fraction sweep per direction. dimacs_ny_d/t are exactly metric road networks (headline)."""
+    pts = []
+    for base, n in REAL_BASES.items():
+        for direction in ("inflate", "deflate", "mixed"):
+            for q in (0.05, 0.10, 0.20, 0.30):
+                c = _base_p2()
+                c.update(sweep=f"RR_{direction}", base=base, n=n, mode="real", break_type="reweight",
+                         direction=direction, frac_q=q, magnitude=5.0)
+                pts.append(c)
+    return pts
+
+
+GRIDS = {"full": POINTS_RGG, "poc": _points_poc(), "large": _points_large(), "realrec": _points_realrec()}
+SAMPLES = {"full": N_SAMPLES, "poc": 30, "large": 20, "realrec": 15}
 
 
 def all_tasks(grid="full"):
@@ -172,7 +222,7 @@ def all_tasks(grid="full"):
 
 
 def task_seed(cfg, s):
-    keys = ("part", "sweep", "mode", "n", "deg", "k", "dim", "break_type", "direction",
+    keys = ("part", "sweep", "mode", "base", "n", "deg", "k", "dim", "break_type", "direction",
             "magnitude", "frac_q", "n_jitter", "jitter_r", "subset_s")
     key = "|".join(str(cfg.get(x)) for x in keys) + f"|{s}"
     return zlib.crc32(key.encode()) & 0x7FFFFFFF
@@ -188,10 +238,16 @@ def build_suite_rgg(seed, drop_ilp=False):
 # ----------------------------------------------------------------------------
 
 def generate_rgg(cfg, seed):
-    """Return (T, H, corrupted, jittered, radius, jitter_abs). T = true metric RGG; H = broken copy."""
+    """Return (T, H, corrupted, jittered, radius, jitter_abs). T = the true (metric) base -- a generated RGG,
+    or, when cfg['base'] is set, a REAL graph loaded from data/processed (relabelled to contiguous ints). H =
+    broken copy. Real bases use reweight corruption (no coordinates -> no jitter)."""
     seed_all(seed)
     n, dim = cfg["n"], cfg["dim"]
-    if cfg["mode"] == "radius":
+    if cfg.get("base"):                                        # REAL metric base (dimacs_ny road net, etc.)
+        T = nx.convert_node_labels_to_integers(load_edgelist(os.path.join("data", "processed",
+                                                                           f"{cfg['base']}.csv")))
+        radius = None
+    elif cfg["mode"] == "radius":
         radius = _radius(cfg["deg"], n)
         T = random_geometric_metric_graph(n, mode="radius", radius=radius, dim=dim, weight_scale=None)
         unit = radius
@@ -439,4 +495,4 @@ def _run(cfg, s, task_index, outdir, drop_ilp=False):
 
 def run_one_rgg_task(task_index, outdir, grid="full"):
     cfg, s = all_tasks(grid)[task_index]
-    return _run(cfg, s, task_index, outdir, drop_ilp=(grid == "large"))
+    return _run(cfg, s, task_index, outdir, drop_ilp=(grid in ("large", "realrec")))

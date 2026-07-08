@@ -42,11 +42,12 @@ from plot_common import (FAMILY, FAMILIES, FAM_TITLE, style_map, ylab, band,    
 
 # stable panel order; label each panel by the knob it sweeps
 SWEEP_X = {
-    "S1": "n", "S1d": "n", "P2size": "n", "POCsize_inflate": "n", "POCsize_jitter": "n",
-    "S2": "deg", "S2k": "k", "S3": "magnitude", "S3d": "magnitude", "S6": "magnitude",
-    "S4i": "frac_q", "S4d": "frac_q", "S5a": "n_jitter", "P2n": "n_jitter",
+    "S1": "n", "S1d": "n", "S1m": "n", "P2size": "n", "POCsize_inflate": "n", "POCsize_jitter": "n",
+    "S2": "deg", "S2k": "k", "S3": "magnitude", "S3d": "magnitude", "S3m": "magnitude", "S6": "magnitude",
+    "S4i": "frac_q", "S4d": "frac_q", "S4m": "frac_q", "S5a": "n_jitter", "P2n": "n_jitter",
     "S5b": "jitter", "P2j": "jitter", "S5c": "subset_s", "P2s": "subset_s",
-    "P2df": "frac_q", "P2dm": "magnitude",
+    "P2df": "frac_q", "P2dm": "magnitude", "P2mf": "frac_q", "P2mm": "magnitude",
+    "RR_inflate": "frac_q", "RR_deflate": "frac_q", "RR_mixed": "frac_q",
 }
 SWEEP_TITLE = {
     "S1": "S1 size (inflate)", "S1d": "S1d size (deflate)", "S2": "S2 density (radius)", "S2k": "S2' density (knn)",
@@ -54,11 +55,15 @@ SWEEP_TITLE = {
     "S4d": "S4' deflate frac", "S5a": "S5a jitter count", "S5b": "S5b jitter mag.",
     "S5c": "S5c jitter subset", "S6": "S6 mag×frac (q averaged)", "P2size": "P2 size (jitter)",
     "P2df": "P2 kNN vs deflate frac", "P2dm": "P2 kNN vs deflate mag.",
+    "S1m": "S1m size (mixed)", "S3m": "S3m mixed mag.", "S4m": "S4m mixed frac",
+    "P2mf": "P2 kNN vs mixed frac", "P2mm": "P2 kNN vs mixed mag.",
+    "RR_inflate": "real recovery: inflate", "RR_deflate": "real recovery: deflate", "RR_mixed": "real recovery: mixed",
     "POCsize_inflate": "POC size (inflate)", "POCsize_jitter": "POC size (jitter)",
     "P2s": "P2 subset", "P2j": "P2 jitter mag.", "P2n": "P2 jitter count",
 }
-ORDER = ["S1", "S1d", "S2", "S2k", "S3", "S3d", "S4i", "S4d", "S5a", "S5b", "S5c", "S6",
-         "POCsize_inflate", "POCsize_jitter", "P2size", "P2df", "P2dm", "P2s", "P2j", "P2n"]
+ORDER = ["S1", "S1d", "S1m", "S2", "S2k", "S3", "S3d", "S3m", "S4i", "S4d", "S4m", "S5a", "S5b", "S5c", "S6",
+         "POCsize_inflate", "POCsize_jitter", "P2size", "P2df", "P2dm", "P2mf", "P2mm", "P2s", "P2j", "P2n",
+         "RR_inflate", "RR_deflate", "RR_mixed"]
 
 
 def _family(df, fam):
