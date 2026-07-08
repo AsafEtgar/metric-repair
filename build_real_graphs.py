@@ -27,6 +27,7 @@ SEED = 12345
 rng = np.random.default_rng(SEED)
 
 DIMACS_N = 1200        # DIMACS road BFS-ball size (nodes); override with --dimacs-n
+DIMACS_NAME = "dimacs_ny"   # output base name; override with --dimacs-name (e.g. a bigger dimacs_ny_big)
 METRIC_MAX = 30000     # above this, the dense-ish APSP metric check is skipped (graph still built)
 
 from datasets import save_edgelist, graph_from_matrix
@@ -174,7 +175,7 @@ def build_dimacs():
         # largest connected component
         cc = max(nx.connected_components(G), key=len)
         G = G.subgraph(cc).copy()
-        out.append(finish(G, "dimacs_ny_%s" % tag, "BFS ball n=%d; weight=%s" % (
+        out.append(finish(G, "%s_%s" % (DIMACS_NAME, tag), "BFS ball n=%d; weight=%s" % (
                           DIMACS_N, "meters" if tag == "d" else "travel-time")))
     return out
 
@@ -401,8 +402,12 @@ if __name__ == "__main__":
                     help="DIMACS road BFS-ball size in nodes; bigger = larger road subgraph "
                          "(default %d; NY has 264,346 nodes). The metric check is skipped above %d." % (
                              DIMACS_N, METRIC_MAX))
+    ap.add_argument("--dimacs-name", default=DIMACS_NAME,
+                    help="output base name for the dimacs graphs (default %s); use a distinct name (e.g. "
+                         "dimacs_ny_big) to build a larger baseline without overwriting the existing one." % DIMACS_NAME)
     a = ap.parse_args()
     DIMACS_N = a.dimacs_n                                 # module-scope: seen by build_dimacs
+    DIMACS_NAME = a.dimacs_name
 
     sel = [s.strip() for s in a.only.split(",") if s.strip()] or list(BUILDERS)
     bad = [s for s in sel if s not in BUILDERS]

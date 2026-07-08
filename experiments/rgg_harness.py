@@ -194,7 +194,7 @@ def _points_large():
 # Real-graph metric bases for the corruption-recovery experiment: (near-)metric so the base is trustworthy
 # ground truth. dimacs_ny is the headline -- a road network, exactly metric, where kNN neighborhoods ARE
 # geographic neighbors, so "recovering the topology" is directly interpretable. (name -> node count.)
-REAL_BASES = {"dimacs_ny_d": 5000, "dimacs_ny_t": 5000, "fish1_ten_lin": 1000,
+REAL_BASES = {"dimacs_ny_big_d": 10000, "dimacs_ny_big_t": 10000, "fish1_ten_lin": 1000,
               "fish1_ten_log": 1000, "pbmc3k_cosine_knn": 2700}
 
 
@@ -208,7 +208,7 @@ def _points_realrec():
             for q in (0.05, 0.10, 0.20, 0.30):
                 c = _base_p2()
                 c.update(sweep=f"RR_{direction}", base=base, n=n, mode="real", break_type="reweight",
-                         direction=direction, frac_q=q, magnitude=5.0)
+                         direction=direction, frac_q=q, magnitude=5.0, recover="restore")
                 pts.append(c)
     return pts
 
@@ -470,7 +470,18 @@ def _run(cfg, s, task_index, outdir, drop_ilp=False):
         if part2 and cover_union is not None and base["status"] == "ok":
             cov_idx = {tuple(sorted((index[u], index[v]))) for (u, v) in cover_union
                        if u in index and v in index}
-            DF = _apsp([e for e in edgesH if tuple(sorted((e[0], e[1]))) not in cov_idx], len(nodes))
+            not_cov = [e for e in edgesH if tuple(sorted((e[0], e[1]))) not in cov_idx]
+            if cfg.get("recover") == "restore":
+                # RESTORATION repair (realrec): keep ALL edges but reweight each cover edge to its detour in
+                # G\S (the metric-consistent value -- decreases a heavy edge, raises a shortcut, both to the
+                # detour). Needed on SPARSE bases (dimacs road net) where plain removal (D_{G\S}) disconnects
+                # the graph and destroys kNN. Bridges (detour = inf) keep their original weight.
+                Ddet = _apsp(not_cov, len(nodes))
+                edgesF = [((iu, iv, Ddet[iu, iv]) if (tuple(sorted((iu, iv))) in cov_idx and np.isfinite(Ddet[iu, iv]))
+                           else (iu, iv, w)) for (iu, iv, w) in edgesH]
+                DF = _apsp(edgesF, len(nodes))
+            else:
+                DF = _apsp(not_cov, len(nodes))            # removal proxy (dense RGG: routes around the cover)
             tacc_F = _triplet_acc(DT, DF, tri)
             knnF = _knn_all(DF, K_LIST)
             for K in K_LIST:

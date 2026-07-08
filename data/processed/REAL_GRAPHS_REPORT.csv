@@ -9,3 +9,5 @@ fish1_ten,1000,1175,1,1000,0.0714,1.0,1.0,15,False,0.0179,skipped,TEN core BFS b
 flycns_male,1200,14025,1,1200,0.0008,1.0,0.3333,1323,False,0.8312,skipped,Traced BFS ball; d=1/(sum synapse counts both dirs)
 dimacs_ny_d,5000,6017,1,5000,13.0,17219.0,1317.0,1325,True,0.0,skipped,BFS ball n=5000; weight=meters
 dimacs_ny_t,5000,6017,1,5000,30.0,43048.0,3144.0,1435,False,0.0028,skipped,BFS ball n=5000; weight=travel-time
+dimacs_ny_big_d,10000,11861,1,10000,5.0,21762.0,1298.0,4353,True,0.0,skipped,BFS ball n=10000; weight=meters
+dimacs_ny_big_t,10000,11861,1,10000,12.0,46805.0,3110.0,3901,False,0.0037,skipped,BFS ball n=10000; weight=travel-time

@@ -12,8 +12,9 @@ set -euo pipefail
 ENV="${1:-metricrepair}"
 NETID="${2:-CHANGE_ME}"
 GRID="${3:-poc}"
-if [ "$GRID" = "poc" ]; then DEFMEM=4g; elif [ "$GRID" = "large" ]; then DEFMEM=16g; else DEFMEM=8g; fi
-if [ "$GRID" = "large" ]; then TIME=04:00:00; else TIME=02:30:00; fi   # large: n up to 3000 -> 4h/task
+if [ "$GRID" = "poc" ]; then DEFMEM=4g; elif [ "$GRID" = "large" ]; then DEFMEM=16g
+elif [ "$GRID" = "realrec" ]; then DEFMEM=24g; else DEFMEM=8g; fi   # realrec: dimacs_ny_big n=10000 APSP dict ~8GB
+if [ "$GRID" = "large" ] || [ "$GRID" = "realrec" ]; then TIME=04:00:00; else TIME=02:30:00; fi
 MEM="${4:-$DEFMEM}"
 MAXJOBS=64
 
