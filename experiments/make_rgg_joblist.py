@@ -19,7 +19,7 @@ def main():
     ap.add_argument("--python", default="python", help="interpreter on the cluster (conda env python)")
     ap.add_argument("--outdir", default="results_rgg")
     ap.add_argument("--joblist", default="rgg_joblist.txt")
-    ap.add_argument("--grid", default="full", choices=["full", "poc"], help="which task grid")
+    ap.add_argument("--grid", default="full", choices=["full", "poc", "large"], help="which task grid")
     ap.add_argument("--setup", default="", help="shell prefix prepended (with &&) to every task command")
     a = ap.parse_args()
     n = len(all_tasks(a.grid))

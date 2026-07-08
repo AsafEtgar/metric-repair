@@ -63,9 +63,10 @@ at n=1000–5000. **The n ≤ 3000 design uses the "scale suite" column.**
 | `gmr_lp_rsp`, `iomr_lp_rsp`, `iomr_thr_rsp` | rsp weight-budget | **O(w_max·n²)** | ❌ **drop** (already dropped on float RGG) |
 | `MVD_Pivot`/`Gilbert_Jain` completion variants | — | O(n³) completion | ❌ not in the suite at scale |
 
-> **Enabling change needed (small):** ILP gating requires setting `n_max=800` on `gmr_ilp`/`iomr_ilp` (today
-> only the rsp methods carry an `n_max`). A tighter `l1sep` cap and the ILP `n_max` are the only harness edits
-> the large-scale suite needs — the fork/budget/region-gate machinery already exists.
+> **Implemented (commit adds a `large` grid):** the large suite drops `gmr_ilp`/`iomr_ilp` **and** the rsp
+> methods via a **per-grid filter** — `DROP_LARGE` in `harness.py`, `drop_ilp=True` in `build_suite_rgg` — NOT a
+> global `n_max=800`, which would also disable the **real-data ILP array** (its graphs have giant > 800). The
+> existing fork/budget/region-gate machinery is reused unchanged.
 
 **Memory:** the APSP dict-of-dicts is O(n²): ~1 GB at n=3000 (fine), but `bestofk`/covering-LP structures
 pushed RGG-full to **8 GB even at n=500**, so budget **16–24 GB/task** at n=3000 and **probe first** (§4.3).
@@ -113,28 +114,34 @@ dense end has many broken cycles to expose algorithm separation, and is the sing
   sets the real number.*
 - **Memory: 16 GB/task**, bump to **24–32 GB** if the probe shows the dense exp2 / `bestofk` blowing up.
   `day` partition, 1 core/task, `--max-jobs 64`, walltime **04:00:00**.
-- **Outputs:** `results_rgg_large/` and `results_geo_large/` (+ `analysis/summary_*_large.csv`,
+- **Outputs:** `results_rgg_large/` and `results_large/` (geometric) (+ `analysis/summary_*_large.csv`,
   `analysis/figs/{rgg,geometric}_large/`); add both dirs to `.gitignore` like the others.
 
 ---
 
 ## 4. Before launching
 
-### 4.1 Harness edits required (small, scoped)
-1. **`rgg_harness.py` `large` grid:** `LARGE_NS = range(1000, 3001, 200)` size sweep (P1 inflate + P2 jitter),
-   plus density at n=2000 in **both** `radius` (deg∈{4,8,12,20,30,40}) and `knn` (k∈{8,12,20,30}) modes.
-2. **`harness.py` `_points_large`:** exp1 coupled-geometric over the ladder × **p∈{.3,.5,.8}**; exp2
-   decoupled-geometric at **n=2000** with **p=2·n^{−α}**, α = `linspace(4/5, 1/3, 16)`.
-3. **Exclude `gmr_ilp`/`iomr_ilp` outright** from the large suite; `rsp` dropped (float RGG + geometric here).
-4. New runners/dirs: `--grid large` → `results_rgg_large/` / `results_geo_large/`; `.gitignore` entries.
+### 4.1 Harness wiring — DONE
+Both grids are wired and verified to enumerate: **RGG-large = 32 configs / 640 tasks** (S1 + P2size size ladder,
+S2 + S2k density at n=2000); **GEO-large = 49 configs / 980 tasks** (exp1 3 p × 11 n; exp2b 16 α). Suite = **16
+algos** (no ILP, no rsp) in both, via the per-grid `DROP_LARGE` / `drop_ilp` filter. `--grid large` on both
+runners; `submit_{dsq,rgg_dsq}.sh large` request **16 GB / 4 h**; outputs gitignored. **Current knobs:** 11
+n-points (`LARGE_NS`), 20 seeds (`SAMPLES/SAMPLE_COUNT['large']`), 16 α-points — edit those to change.
 
-### 4.2 Open decisions to confirm (flag any before I wire it)
-- **11 points** (keep n=3000) or **10** (drop 3000)?
-- **20 seeds** (flat) or 15, given the heavier cost (exp1×3 densities + the dense exp2 tail)?
-- exp2: **16 α-points** across 4/5→1/3 ok, and confirm the **×2** factor on `p` (keeps it connected + denser)?
+### 4.2 Cluster run (after the probe)
+```bash
+git pull && module load miniconda && conda activate metricrepair
+python experiments/run_rgg_task.py --grid large --count      # -> 640
+python experiments/run_task.py     --grid large --count      # -> 980
+bash experiments/submit_rgg_dsq.sh metricrepair <PI_netid> large   # -> results_rgg_large/ (16g, 4h)
+bash experiments/submit_dsq.sh     metricrepair <PI_netid> large   # -> results_large/
+sbatch dsq_rgg_large_submit.sh ; sbatch dsq_large_submit.sh
+# collect + reuse the existing analysis on the new dirs:
+python experiments/collect.py --indir results_rgg_large --out results_rgg_large_all.csv
+python experiments/collect.py --indir results_large     --out results_large_all.csv
+```
 
 ### 4.3 Probe first (per the STATUS §3 practice)
-Run **one instance** at n ∈ {1000, 2000, 3000} through the scale suite, logging per-algo wall + `peak_mb`,
-before committing cluster hours. This replaces the §3.2 estimate with measured numbers and sets the true
-memory request. (The real-graph runs already give n=1000–5000 timings for `domr` and several heuristics, but
-not the RGG-sparse covering-LP family at n ≥ 1500.)
+Measure the heaviest instances — RGG P1/P2 at n=3000 and the **dense exp2 (n=2000, ~320k edges)** — logging
+per-algo wall + `peak_mb`, before committing cluster hours; this replaces the §3.2 estimate and sets the true
+memory request. (Results folded back into §3.2 once measured.)

@@ -12,7 +12,8 @@ set -euo pipefail
 ENV="${1:-metricrepair}"
 NETID="${2:-CHANGE_ME}"
 GRID="${3:-poc}"
-if [ "$GRID" = "poc" ]; then DEFMEM=4g; else DEFMEM=8g; fi
+if [ "$GRID" = "poc" ]; then DEFMEM=4g; elif [ "$GRID" = "large" ]; then DEFMEM=16g; else DEFMEM=8g; fi
+if [ "$GRID" = "large" ]; then TIME=04:00:00; else TIME=02:30:00; fi   # large: n up to 3000 -> 4h/task
 MEM="${4:-$DEFMEM}"
 MAXJOBS=64
 
@@ -41,7 +42,7 @@ dsq --job-file "$JOB" \
     --account "pi_${NETID}" \
     --cpus-per-task 1 \
     --mem-per-cpu "$MEM" \
-    --time 02:30:00 \
+    --time "$TIME" \
     --max-jobs "$MAXJOBS" \
     --output "logs/dsq-rgg-${GRID}-%A_%3a.out"
 

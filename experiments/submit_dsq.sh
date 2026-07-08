@@ -12,8 +12,9 @@ set -euo pipefail
 ENV="${1:-metricrepair}"           # conda env name
 NETID="${2:-CHANGE_ME}"            # PI's netid, for -A pi_<netid>
 GRID="${3:-small}"
-if [ "$GRID" = "small" ]; then DEFMEM=4g; else DEFMEM=8g; fi
+if [ "$GRID" = "small" ]; then DEFMEM=4g; elif [ "$GRID" = "large" ]; then DEFMEM=16g; else DEFMEM=8g; fi
 MEM="${4:-$DEFMEM}"
+if [ "$GRID" = "large" ]; then TIME=04:00:00; else TIME=02:30:00; fi   # large: n up to 3000 -> 4h/task
 MAXJOBS=64
 
 if [ "$GRID" = "full" ]; then
@@ -43,7 +44,7 @@ dsq --job-file "$JOB" \
     --account "pi_${NETID}" \
     --cpus-per-task 1 \
     --mem-per-cpu "$MEM" \
-    --time 02:30:00 \
+    --time "$TIME" \
     --max-jobs "$MAXJOBS" \
     --output "logs/dsq-${GRID}-%A_%3a.out"
 
