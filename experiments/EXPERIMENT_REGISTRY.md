@@ -92,11 +92,12 @@ n ∈ {1000, 1200, 1400, 1600, 1800, 2000, 2200, 2400, 2600, 2800, 3000}   # ste
 | **RGG density (radius)** | RGG float, `radius` | mean deg ∈ {4,8,12,20,30,40} | **n=2000**, inflate | `ratio_domr` vs density |
 | **RGG density (knn)** | RGG float, **`knn`** | k ∈ {8,12,20,30} | **n=2000**, inflate | knn-topology density variant |
 | **GEO / exp1** | coupled geometric, int | `n` ladder | **p ∈ {0.3, 0.5, 0.8}** | `ratio_domr` vs n, planted breaks |
-| **GEO / exp2** | decoupled geometric, int | **α: 4/5 → 1/3** (`p = 2·n^−α`) | **n=1500** | density onset + algo separation |
+| **GEO / exp2** | decoupled geometric, int | **α: 4/5 → 1/3** (`p = 2·n^−α`) | **n=2000** (to match RGG density) | density onset + algo separation |
 
-**exp2 detail:** `p = 2·n^{−α}`, α **decreasing** from 4/5 to 1/3 over ~16 points (linspace). The ×2 keeps the
-graph connected further into the sweep, and lowering α densifies it: at n=1500 this runs **p ≈ 0.006 → 0.175**
-(mean degree ≈ 9 → ≈ 260) — the dense end has many more broken cycles, to expose algorithm separation.
+**exp2 detail:** `p = 2·n^{−α}`, α **decreasing** from 4/5 to 1/3 over ~16 points (linspace), at **n=2000** (same
+baseline as the RGG density sweep). The ×2 keeps the graph connected further into the sweep, and lowering α
+densifies it: at n=2000 this runs **p ≈ 0.005 → 0.16** (mean degree ≈ 9 → ≈ 320, **up to ~320k edges**) — the
+dense end has many broken cycles to expose algorithm separation, and is the single heaviest slice of the run.
 
 **Config count:** 11 (RGG-P1) + 11 (RGG-P2) + 6 (RGG deg) + 4 (RGG knn) + 33 (geo exp1: 3 p × 11 n) +
 16 (geo exp2) = **81 configs**.
@@ -106,10 +107,10 @@ graph connected further into the sweep, and lowering α densifies it: at n=1500 
 - **Suite:** the scale suite (§2) **minus the two ILP entries entirely** → RGG ~13 algos, geometric ~13
   (rsp also dropped). References = `domr` (|H|), `gmr_lp_naive`, `iomr_lp_naive`.
 - **Seeds: 20 (flat)** — all points are large, so no tapering; drop to 15 if the probe says it's pricey.
-- **Cost:** ≈ **140–200 core-h** (up from the pure-ladder estimate: exp1 is now 3 densities and exp2's
-  **dense end — n=1500, p≈0.175, ~200k edges — is the single heaviest slice**: APSP + covering-LP on that many
-  edges is minutes/instance). *Extrapolated; the probe (§4.3) — which must include the exp2 dense end — sets
-  the real number.*
+- **Cost:** ≈ **150–220 core-h** (exp1 is 3 densities; exp2's **dense end — n=2000, p≈0.16, ~320k edges (near
+  ripe_atlas) — is the single heaviest slice**: APSP + covering-LP on that many edges is minutes/instance and
+  some heuristics will hit the cap). *Extrapolated; the probe (§4.3) — which must include the exp2 dense end —
+  sets the real number.*
 - **Memory: 16 GB/task**, bump to **24–32 GB** if the probe shows the dense exp2 / `bestofk` blowing up.
   `day` partition, 1 core/task, `--max-jobs 64`, walltime **04:00:00**.
 - **Outputs:** `results_rgg_large/` and `results_geo_large/` (+ `analysis/summary_*_large.csv`,
@@ -123,7 +124,7 @@ graph connected further into the sweep, and lowering α densifies it: at n=1500 
 1. **`rgg_harness.py` `large` grid:** `LARGE_NS = range(1000, 3001, 200)` size sweep (P1 inflate + P2 jitter),
    plus density at n=2000 in **both** `radius` (deg∈{4,8,12,20,30,40}) and `knn` (k∈{8,12,20,30}) modes.
 2. **`harness.py` `_points_large`:** exp1 coupled-geometric over the ladder × **p∈{.3,.5,.8}**; exp2
-   decoupled-geometric at **n=1500** with **p=2·n^{−α}**, α = `linspace(4/5, 1/3, 16)`.
+   decoupled-geometric at **n=2000** with **p=2·n^{−α}**, α = `linspace(4/5, 1/3, 16)`.
 3. **Exclude `gmr_ilp`/`iomr_ilp` outright** from the large suite; `rsp` dropped (float RGG + geometric here).
 4. New runners/dirs: `--grid large` → `results_rgg_large/` / `results_geo_large/`; `.gitignore` entries.
 
