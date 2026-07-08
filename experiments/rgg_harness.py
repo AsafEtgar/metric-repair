@@ -138,7 +138,9 @@ def _points_mixed():
     return pts
 
 
-POINTS_RGG = _points_part1() + _points_part2() + _points_mixed()
+POINTS_RGG = _points_part1() + _points_part2()   # 'mixed' is a SEPARATE grid (below), not appended here, so
+                                                 # the running full/large jobs are unaffected and mixed can be
+                                                 # launched standalone.
 
 
 def _points_poc():
@@ -180,12 +182,19 @@ def _points_large():
     for m in (2.0, 3.0, 5.0, 10.0):                        # recovery vs deflate MAGNITUDE (fraction fixed .1)
         e = _base_p2(); e.update(sweep="P2dm", n=1000, break_type="reweight",
                                  direction="deflate", frac_q=0.10, magnitude=float(m)); pts.append(e)
-    for n in LARGE_NS:                                     # MIXED size ladder (repair quality vs n)
+    return pts
+
+
+def _points_largemix():
+    """Large-scale MIXED corruption (its own grid so it runs standalone, no ILP): S1m mixed size ladder +
+    P2mf/P2mm mixed kNN recovery at n=1000. Mirrors the deflate arm in _points_large."""
+    pts = []
+    for n in LARGE_NS:
         c = _base_p1(); c.update(sweep="S1m", n=n, direction="mixed"); pts.append(c)
-    for q in (0.02, 0.05, 0.10, 0.20, 0.30):               # MIXED kNN recovery vs fraction (n=1000)
+    for q in (0.02, 0.05, 0.10, 0.20, 0.30):
         e = _base_p2(); e.update(sweep="P2mf", n=1000, break_type="reweight",
                                  direction="mixed", frac_q=q, magnitude=5.0); pts.append(e)
-    for m in (2.0, 3.0, 5.0, 10.0):                        # MIXED kNN recovery vs magnitude (n=1000)
+    for m in (2.0, 3.0, 5.0, 10.0):
         e = _base_p2(); e.update(sweep="P2mm", n=1000, break_type="reweight",
                                  direction="mixed", frac_q=0.10, magnitude=float(m)); pts.append(e)
     return pts
@@ -213,8 +222,9 @@ def _points_realrec():
     return pts
 
 
-GRIDS = {"full": POINTS_RGG, "poc": _points_poc(), "large": _points_large(), "realrec": _points_realrec()}
-SAMPLES = {"full": N_SAMPLES, "poc": 30, "large": 20, "realrec": 15}
+GRIDS = {"full": POINTS_RGG, "poc": _points_poc(), "large": _points_large(),
+         "mixed": _points_mixed(), "largemix": _points_largemix(), "realrec": _points_realrec()}
+SAMPLES = {"full": N_SAMPLES, "poc": 30, "large": 20, "mixed": N_SAMPLES, "largemix": 20, "realrec": 15}
 
 
 def all_tasks(grid="full"):
@@ -506,4 +516,4 @@ def _run(cfg, s, task_index, outdir, drop_ilp=False):
 
 def run_one_rgg_task(task_index, outdir, grid="full"):
     cfg, s = all_tasks(grid)[task_index]
-    return _run(cfg, s, task_index, outdir, drop_ilp=(grid in ("large", "realrec")))
+    return _run(cfg, s, task_index, outdir, drop_ilp=(grid in ("large", "largemix", "realrec")))

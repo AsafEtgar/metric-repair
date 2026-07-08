@@ -15,7 +15,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--task-index", type=int, default=None)
     ap.add_argument("--outdir", default="results_rgg")
-    ap.add_argument("--grid", default="full", choices=["full", "poc", "large", "realrec"], help="which task grid to run")
+    ap.add_argument("--grid", default="full", choices=["full", "poc", "large", "mixed", "largemix", "realrec"], help="which task grid to run")
     ap.add_argument("--count", action="store_true", help="print the total number of tasks and exit")
     a = ap.parse_args()
     if a.count:
