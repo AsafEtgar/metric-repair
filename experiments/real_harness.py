@@ -21,6 +21,11 @@ import multiprocessing as mp
 
 import networkx as nx
 
+# pivot/MVD_Pivot recurses ~n deep on the completed graph; real graphs reach n=2700 (pbmc3k) while Python's
+# default limit is 1000 -> RecursionError. Forked task children inherit this. 2700 frames is well within the
+# C stack, so no segfault risk at these sizes. (The synthetic runs never hit it -- pivot only saw n<=800.)
+sys.setrecursionlimit(100000)
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))                    # experiments/
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # repo root
 from graph_models import seed_all                                                 # noqa: E402
