@@ -3,8 +3,8 @@
 Metric-repair code and experiments. The library is now **pure Python** (numpy / scipy / networkx);
 the original **Sage** implementation is preserved under [`sage_version/`](sage_version/) and the two
 are proven to agree in [`equivalence/`](equivalence/). This repo holds **only** metric-repair
-material; hyperbolicity/slimness/etc. studies live in sibling folders (`../average_hyperbolicity/`,
-`../misc_metric_repair_heuristics/`).
+material; hyperbolicity/slimness/etc. studies live under `../metric_repair_archive/` (e.g.
+`../metric_repair_archive/average_hyperbolicity/`, `../metric_repair_archive/misc_metric_repair_heuristics/`).
 
 Why the port: easy cluster deployment (`pip install numpy scipy networkx`, no Sage), no Sage-Integer
 pitfalls, and a ~100x faster `shortest_path_cover` via `scipy.sparse.csgraph`.
@@ -83,8 +83,10 @@ results with the Python library rather than expecting to replay specific Sage nu
 | `res_finalle/` | Result CSVs consumed by `PAPER_PLOTS.ipynb`. **Do not rename** (relative path). |
 | `plots_paper/` | Paper figures consumed by `PAPER_PLOTS.ipynb`. **Do not rename.** |
 
-Moved out of the repo to `../metric_repair_archive/` (pending a manual audit): `Archive/` (old
-experiment rounds), `vendor/minihit/` (unused hitting-set solver), and the pre-split backup notebook.
+Moved out of the repo to `../metric_repair_archive/` (legacy, pending a manual audit): `Archive/` (old
+experiment rounds), `vendor/minihit/` (unused hitting-set solver), the pre-split backup notebook, and the
+consolidated pre-port legacy folders — `Average Metric Graphs/`, `Sage Script/`, `Random Geometric
+Weighted Graphs (Julia)/`, `misc_metric_repair_heuristics/`, and the separate `average_hyperbolicity/` study.
 
 ## History
 - 2026-06-25: ported the library Sage → pure Python (numpy/scipy/networkx); Sage kept in
