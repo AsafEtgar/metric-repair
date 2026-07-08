@@ -379,33 +379,35 @@ def Gilbert_Jain_IOMR(Kn):
 
 
 def _mvd_pivot_rec(ind, X, S):
-    """Recursive pivot step for MVD_Pivot. X is the (mutated) NumPy adjacency matrix; S accumulates
-    the corrected edge POSITIONS.
+    """Pivot step for MVD_Pivot. X is the (mutated) NumPy adjacency matrix; S accumulates the corrected
+    edge POSITIONS.
 
     For a fixed pivot i, every pair (j, k) of remaining vertices is clipped into
     [ |X[i,j]-X[i,k]| , X[i,j]+X[i,k] ] -- one broadcast clip. Both X[j,k] and X[k,j] are written so
     the matrix stays symmetric (later pivots must read up-to-date distances). Kernel copied verbatim
     from the Sage version, so on the same matrix + same NumPy seed it reproduces the Sage cover.
+
+    ITERATIVE (was tail-recursive): recursion depth grew ~n and overflowed the C stack on large graphs
+    (segfault -> the child was 'killed'; RecursionError below the raised limit). The loop is behaviour- and
+    RNG-order-identical -- each pass picks a pivot from the remaining set, exactly as the recursion did.
     """
-    if len(ind) <= 2:
-        return
-    i = np.random.choice(ind)
-    ind_i = ind.copy()                         # don't mutate the caller's list
-    ind_i.remove(i)                            # remove the current pivot
-    R = np.array(ind_i)
-    p = X[i, R]
-    lo = np.abs(p[:, None] - p[None, :])
-    hi = p[:, None] + p[None, :]
-    sub = X[np.ix_(R, R)]
-    new = np.minimum(np.maximum(sub, lo), hi)  # clip into [lo, hi]
-    a, b = np.triu_indices(len(R), k=1)        # pairs (a before b in ind order)
-    changed = new[a, b] != sub[a, b]
-    X[R[a], R[b]] = new[a, b]                  # write X[j,k] ...
-    X[R[b], R[a]] = new[a, b]                  # ... and X[k,j]: keep the distance matrix symmetric
-    for t in np.nonzero(changed)[0]:
-        j, k = int(R[a[t]]), int(R[b[t]])
-        S.add((j, k) if j < k else (k, j))
-    _mvd_pivot_rec(ind_i, X, S)
+    ind = list(ind)                            # local copy; don't mutate the caller's list
+    while len(ind) > 2:
+        i = np.random.choice(ind)
+        ind.remove(i)                          # remove the current pivot; `ind` is now the remaining set
+        R = np.array(ind)
+        p = X[i, R]
+        lo = np.abs(p[:, None] - p[None, :])
+        hi = p[:, None] + p[None, :]
+        sub = X[np.ix_(R, R)]
+        new = np.minimum(np.maximum(sub, lo), hi)  # clip into [lo, hi]
+        a, b = np.triu_indices(len(R), k=1)        # pairs (a before b in ind order)
+        changed = new[a, b] != sub[a, b]
+        X[R[a], R[b]] = new[a, b]                  # write X[j,k] ...
+        X[R[b], R[a]] = new[a, b]                  # ... and X[k,j]: keep the distance matrix symmetric
+        for t in np.nonzero(changed)[0]:
+            j, k = int(R[a[t]]), int(R[b[t]])
+            S.add((j, k) if j < k else (k, j))
 
 
 def MVD_Pivot(Kn):
