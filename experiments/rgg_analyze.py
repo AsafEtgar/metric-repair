@@ -147,11 +147,51 @@ def _dist_aggs(cols):
     return named
 
 
+def attach_base(df):
+    """Recover the realrec BASE GRAPH for each row. It is not in the CSV.
+
+    `RGG_CSV_FIELDS` is shared by every RGG grid, so adding a `base` column would change the header for
+    results_rgg (5000 files) and every other grid, and collect.py would (correctly) abort on the ragged
+    schema. Rerunning 8180 tasks to add one column is not worth it, so we join on the task index instead.
+
+    Index-based provenance is fragile -- `task_seed` silently gained a field once and invalidated exactly
+    this kind of mapping -- so the join is VERIFIED, not trusted: every row's recorded `n` and `sweep` must
+    match the config the current grid puts at that index. A mismatch means the grid definition moved under
+    the data, and we refuse rather than mislabel the road-network results.
+
+    Without this, RR_* curves silently pool 5 different base graphs, and `n` only half-disambiguates them
+    (dimacs_ny_big_d/_t both n=10000; fish1_ten_lin/_log both n=1000 -- exactly the pairs that matter).
+    """
+    df = df.copy()
+    if "sweep" not in df or not df["sweep"].astype(str).str.startswith("RR_").any():
+        df["base"] = None                     # not a realrec run; harmless placeholder for the groupby keys
+        return df
+
+    from rgg_harness import all_tasks         # noqa: E402  (import here: only realrec needs the harness)
+    tasks = all_tasks("realrec")
+    idx2base = {i: cfg.get("base") for i, (cfg, _s) in enumerate(tasks)}
+    idx2n = {i: cfg.get("n") for i, (cfg, _s) in enumerate(tasks)}
+    idx2sweep = {i: cfg.get("sweep") for i, (cfg, _s) in enumerate(tasks)}
+
+    t = df["task"].astype(int)
+    bad = df[(t.map(idx2n) != df["n"]) | (t.map(idx2sweep) != df["sweep"])]
+    if len(bad):
+        raise SystemExit(
+            "realrec task->base join FAILED on %d rows: the current 'realrec' grid does not match the grid "
+            "these CSVs were written with (first bad task=%s, csv n=%s sweep=%s, grid n=%s sweep=%s).\n"
+            "Re-collect from a matching commit, or re-run the grid." % (
+                len(bad), bad.iloc[0]["task"], bad.iloc[0]["n"], bad.iloc[0]["sweep"],
+                idx2n.get(int(bad.iloc[0]["task"])), idx2sweep.get(int(bad.iloc[0]["task"]))))
+    df["base"] = t.map(idx2base)
+    print("realrec: recovered base for %d rows -> %s" % (len(df), sorted(df["base"].dropna().unique())))
+    return df
+
+
 def aggregate_edit(df):
     """One row per (task, algo) -- Part-2's 4 kNN rows share edit metrics, so collapse them -- then summarise
-    per (part, sweep, x, series, algo, variant) over the samples."""
+    per (part, sweep, base, x, series, algo, variant) over the samples."""
     one = df.sort_values("knn_k").groupby(["task", "algo"], as_index=False).first()
-    keys = ["part", "sweep", "mode", "break_type", "direction", "x", "series", "algo", "variant"]
+    keys = ["part", "sweep", "base", "mode", "break_type", "direction", "x", "series", "algo", "variant"]
     g = one.groupby(keys, dropna=False)
     named = {"n_samples": ("sample", "nunique"),
              "H_med": ("H", "median"), "n_corrupted_med": ("n_corrupted", "median"),
@@ -164,7 +204,7 @@ def aggregate_edit(df):
 def aggregate_knn(df):
     """Part 2 only: summarise the T/C/F kNN metrics per (sweep, x, series, algo, variant, knn_k)."""
     k = df[df["knn_k"].notna()].copy()
-    keys = ["sweep", "mode", "x", "series", "algo", "variant", "knn_k"]
+    keys = ["sweep", "base", "mode", "x", "series", "algo", "variant", "knn_k"]   # base: see attach_base()
     if k.empty:
         return pd.DataFrame(columns=keys + ["n_samples"] + [f"{c}_med" for c in DIST_KNN])
     g = k.groupby(keys, dropna=False)
@@ -195,6 +235,7 @@ def main():
     df = load(a.results)
     df = derive(df)
     df = add_x(df)
+    df = attach_base(df)          # realrec only; verified task->base join (the CSV has no base column)
     report(df)
 
     # This analyzer previously neither filtered NOR reported invalid covers, and has no timeout_rate column,
