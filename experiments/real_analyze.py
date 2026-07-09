@@ -44,17 +44,33 @@ def load(path):
 
 
 def _graph_refs(g):
-    """Per-graph reference optima (value, kind) for GMR and IOMR. ILP if it converged, else the naive-LP
-    lower bound -- so a missing/timed-out ILP degrades gracefully to a bound."""
+    """Per-graph reference optima (value, kind) for GMR and IOMR. ILP if it is a TRUSTWORTHY exact optimum,
+    else the naive-LP lower bound -- so a missing / timed-out / invalid ILP degrades gracefully to a bound."""
     def val(algo, col):
         r = g.loc[g["algo"] == algo, col]
         return r.iloc[0] if len(r) else np.nan
 
-    if pd.notna(val("gmr_ilp", "size")) and val("gmr_ilp", "converged") is True:
+    def exact_ok(algo):
+        """`converged` alone is NOT enough to call an ILP row the exact optimum. Two ways it lies:
+
+        1. status != "ok": harness._aggregate summed size/exact_opt and ANDed converged over only the
+           components that RETURNED. A timed-out component contributes nothing, so a partially-solved graph
+           reports converged=True with a partial optimum.
+        2. valid != 1: the separation oracle drops edges of weight <= 1e-8 (AUDIT_REPORT.md A1), so on
+           bct_coactivation_lin/_log and flycns_male_log the ILP "converges" to a cover that does not
+           actually repair the graph. Using its size as OPT inflated gmr_bestofk's ratio from 1.28 to 30.58.
+
+        An insufficient cover is a SMALL cover, so trusting it shrinks the denominator and inflates every
+        ratio on that graph. Fall through to the LP lower bound instead -- honest, and flagged as such.
+        """
+        return (pd.notna(val(algo, "size")) and val(algo, "converged") is True
+                and val(algo, "status") == "ok" and val(algo, "valid") == 1)
+
+    if exact_ok("gmr_ilp"):
         gmr, gk = val("gmr_ilp", "size"), "exact"
     else:
         gmr, gk = val("gmr_lp_naive", "lp_bound"), "lower_bound"
-    if pd.notna(val("iomr_ilp", "size")) and val("iomr_ilp", "converged") is True:
+    if exact_ok("iomr_ilp"):
         iomr, ik = val("iomr_ilp", "size"), "exact"
     else:
         iomr, ik = val("iomr_lp_naive", "lp_bound"), "lower_bound"
@@ -131,8 +147,19 @@ def main():
 
     df = load(a.results)
     df = derive(df)
-    summ = aggregate(df)
-    report(df, summ)
+
+    # An invalid cover (valid==0) does not repair the graph. It is an INSUFFICIENT cover, so its |S| is
+    # understated and every quality metric derived from it is biased in the algorithm's favour. Such rows
+    # must not enter the aggregate. `valid` is NaN for the LP-bound algos (they emit a value, not a cover)
+    # and for timed-out rows, so test != 0 rather than == 1.
+    inval = df["valid"] == 0
+    if inval.any():
+        by = df[inval].groupby(["graph", "algo"]).size()
+        print(f"\nDROPPING {int(inval.sum())} invalid-cover rows from the aggregate "
+              f"({by.index.get_level_values('graph').nunique()} graphs). Root cause: AUDIT_REPORT.md A1.")
+        print(by.to_string())
+    summ = aggregate(df[~inval])
+    report(df, summ)                      # report() sees the FULL frame, so the invalid count stays visible
 
     rows_path = os.path.join(a.outdir, "real_rows_with_ratio.csv")
     summ_path = os.path.join(a.outdir, "summary_real.csv")

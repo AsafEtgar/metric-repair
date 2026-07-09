@@ -92,9 +92,13 @@ def _points_small():
 
 # Large-scale grid (see EXPERIMENT_REGISTRY.md §3): no exact solver at this scale -> DROP_LARGE strips the ILP
 # AND the rsp methods (O(w_max*n^2)); the suite becomes heuristics + LP-bound references + domr. exp1 sweeps a
-# large n-ladder at three densities; exp2 (decoupled) sits at n=2000 with p = 2*n^-alpha, alpha 4/5 -> 1/3
+# n-ladder at TWO densities (p = 0.3, 0.5); exp2 (decoupled) sits at n=2000 with p = 2*n^-alpha, alpha 4/5 -> 1/3
 # (the x2 keeps it connected while densifying to ~320k edges, to surface algorithm separation on dense graphs).
-LARGE_NS = tuple(range(1000, 3001, 200))               # 1000..3000 step 200 -> 11 points
+#
+# LARGE_NS is DEAD. It described the original 1000..3000 ladder. The probe capped exp1 at n<=1500 (dense
+# geometric: edges ~ p*n^2/2), so _points_large() uses linspace(1000, 1500, 10) instead. Kept only so the
+# original design intent stays legible next to EXPERIMENT_REGISTRY.md §3.1. Do not use it.
+LARGE_NS = tuple(range(1000, 3001, 200))               # UNUSED -- superseded by the n<=1500 cap in _points_large
 DROP_LARGE = {"gmr_ilp", "iomr_ilp", "gmr_lp_rsp", "iomr_lp_rsp", "iomr_thr_rsp"}
 
 
@@ -252,25 +256,39 @@ def _child(fn, CC, verify_fn, conn):
 def run_isolated(fn, CC, verify_fn, timeout_s):
     """Run fn(CC) in a forked child with a wall-clock cap; return a dict with RUN_FIELDS (subset).
 
-    DRAIN-AS-YOU-WAIT: _child now ships the cover, which on large/dense instances (n=3000) exceeds the ~64KB
-    OS pipe buffer. poll()+recv() (not p.join() first) lets the parent start reading so the child's send()
-    can't block -> avoids the deadlock that truncated the real-data run (see real_harness.run_isolated)."""
+    DRAIN-AS-YOU-WAIT: _child ships the cover, which on large/dense instances (n=3000) exceeds the ~64KB OS
+    pipe buffer. A child blocked in send() never exits, so p.join() first would deadlock: the parent waits for
+    exit, the child waits for a reader. poll()+recv() makes the parent read first, unblocking the child. This
+    deadlock is what truncated the real-data run to 286/589 CSVs.
+
+    The cap is enforced on poll() only -- i.e. on time-to-FIRST-BYTE, not on the whole transfer.
+
+    Multiprocessing frames each message as a length header + body, so a truncated payload is never silently
+    accepted as complete -- but the two truncation modes raise DIFFERENT exceptions:
+        child dies before sending  -> EOFError
+        child dies mid-header/body -> OSError("got end of file during message")
+    The OOM-killer taking a child while it pickles a large cover hits the second case. Catching only EOFError
+    let that OSError escape run_one_task and run_task.py, so the task wrote NO CSV and the results of every
+    OTHER algorithm on that graph were lost too. Both are now caught (AUDIT_REPORT.md A5).
+    """
     ctx = mp.get_context("fork")
     parent_conn, child_conn = ctx.Pipe(duplex=False)
     p = ctx.Process(target=_child, args=(fn, CC, verify_fn, child_conn))
     t0 = time.perf_counter()
     p.start()
-    child_conn.close()                                        # read-only parent -> poll() sees EOF if child dies
+    # Parent never writes. Closing its copy of the write end means the pipe reports EOF as soon as the child
+    # dies -- otherwise our own open handle would keep it alive and poll() would block for the full timeout.
+    child_conn.close()
     if not parent_conn.poll(timeout_s):                       # nothing within the cap -> still computing -> kill
-        p.terminate(); p.join(5)
-        if p.is_alive():
+        p.terminate(); p.join(5)                              # SIGTERM first, give it 5s to unwind
+        if p.is_alive():                                      # stuck in an uninterruptible C call -> hard kill
             p.kill(); p.join()
         return {"status": "timeout", "wall": time.perf_counter() - t0}
     try:
         out = parent_conn.recv()                              # child mid-send -> our read drains + unblocks it
-    except EOFError:                                          # child died before sending (segfault / OOM-kill)
+    except (EOFError, OSError):                               # died before sending / mid-frame (segfault, OOM)
         out = {"status": "killed"}
-    p.join()
+    p.join()                                                  # reap; the child has already sent everything
     return out
 
 
@@ -316,6 +334,18 @@ def _aggregate(results):
     agg["peak_mb"] = round(peak, 1)
     for k in ("cpu", "wall"):
         agg[k] = round(sums[k], 4)
+
+    # A PARTIAL RESULT IS NOT A RESULT.
+    # The loop above sums size/exact_opt and ANDs valid/converged over only the components that RETURNED.
+    # A component that timed out or was killed sends {"status": ...} and nothing else, so it contributes
+    # neither term. The row therefore ends up with a partial cover size and a partial optimum, while
+    # `converged` stays True because the surviving components all converged. Measured: 27 ILP rows in
+    # results_rgg_full_all.csv carry status=timeout AND converged=True. Downstream, _task_refs would adopt
+    # that partial exact_opt as the graph's true optimum, understating it and inflating every ratio against
+    # it. `status` is the only honest signal, so gate on it here rather than trusting every reader to.
+    if agg["status"] != "ok":
+        for k in ("size", "valid", "converged", "exact_opt"):
+            agg[k] = None
     return agg
 
 

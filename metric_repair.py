@@ -33,7 +33,7 @@ import heapq
 from itertools import combinations
 from scipy import sparse
 from scipy.optimize import linprog, milp, LinearConstraint, Bounds
-from scipy.sparse.csgraph import shortest_path
+from scipy.sparse.csgraph import shortest_path, csgraph_from_dense
 
 
 # ----------------------------------------------------------------------------
@@ -763,25 +763,50 @@ def pivot_heuristic(G):
 def _apsp_positions(G, heavy=None, big=0.0):
     """All-pairs shortest paths (Floyd-Warshall, with predecessors) in position space. Edges in the set
     `heavy` (normalised label pairs) are reweighted to `big` so shortest detours avoid them. Returns
-    (dist, pred, verts, idx) where verts is the position -> label map and idx its inverse."""
+    (dist, pred, verts, idx) where verts is the position -> label map and idx its inverse.
+
+    !! KNOWN BUG -- AUDIT_REPORT.md A1 (NOT fixed here) !!
+    `A` is a dense matrix whose non-edges are 0. SciPy's dense->graph conversion treats near-zero entries as
+    NON-EDGES: it masks them via np.ma.masked_values, whose default atol is 1e-8. So every real edge with
+    weight <= 1e-8 is SILENTLY DELETED from the graph this function searches.
+
+    Measured: a 2-hop detour of weight 1e-7 is found; 1e-8 and below are dropped.
+
+    This made the separation oracle disagree with verifier(), which uses networkx APSP and keeps those edges.
+    The `_lin`/`_log` similarity inversions add exactly one edge of weight EPS=1e-9, so on
+    bct_coactivation_lin/_log and flycns_male_log the oracle could not see detours through it, reported
+    converged=True, and returned an "exact optimum" that failed verification.
+
+    FIXED: non-edges are now np.inf and the mask is taken on inf, not on 0. Every finite entry -- however
+    small -- is a real edge. Verified bit-identical to the old code on graphs with no sub-1e-8 weights.
+    """
     verts = sorted(G.nodes())
     idx = {v: i for i, v in enumerate(verts)}
-    A = np.zeros((len(verts), len(verts)))
+    A = np.full((len(verts), len(verts)), np.inf)
+    np.fill_diagonal(A, 0.0)
     for u, v, w in sorted_edges(G, weight=True):
         a, b = idx[u], idx[v]
         A[a, b] = A[b, a] = big if (heavy is not None and (u, v) in heavy) else float(w)
-    dist, pred = shortest_path(A, method="FW", directed=False, return_predecessors=True)
+    # null_value=np.inf: only inf means "no edge". Passing the dense array straight to shortest_path would
+    # instead mask |entry| <= 1e-8 as absent (np.ma.masked_values' default atol), deleting tiny real edges.
+    dist, pred = shortest_path(csgraph_from_dense(A, null_value=np.inf), method="FW",
+                               directed=False, return_predecessors=True)
     return dist, pred, verts, idx
 
 
-def _violated_cuts(G, sol, D, integral, tol=1e-6, max_cuts=None, iomr=False):
+def _violated_cuts(G, sol, D, integral, tol=1e-6, max_cuts=None, iomr=False, break_tol=1e-9):
     """Separation oracle. Return a list of violated broken-cycle constraints for the current solution
     `sol` (a length-m array indexed by D). Each cut is a frozenset of edge-index columns -- the support
     of one constraint sum_{e in cut} y_e >= 1.
 
     integral=True : treat sol as a 0/1 cover S; heavy the cover edges so detours avoid them, then every
-                    edge undercut by such a detour yields a cycle S fails to hit. This is the verifier's
-                    certificate -- sound AND complete, so a clean pass proves S optimal.
+                    edge undercut by such a detour yields a cycle S fails to hit. Intended to be the
+                    verifier's certificate -- sound AND complete, so a clean pass proves S optimal.
+                    IT IS NOT COMPLETE IN PRACTICE. It inherits the sub-1e-8 edge deletion in
+                    _apsp_positions (see that docstring, and audit A1): on a graph carrying such an edge it
+                    returns 0 cuts for a cover that verifier() rejects. Reproduced on bct_coactivation_lin:
+                    ILP -> |S|=87, converged=True, verifier=0, 19 residual violations with gaps up to 0.088.
+                    A clean pass therefore does NOT prove optimality on those graphs.
     integral=False: treat sol as fractional; report each edge's canonical (shortest-detour) cycle when
                     its y-sum is < 1. Sound (real violated constraints) but not complete.
 
@@ -792,6 +817,13 @@ def _violated_cuts(G, sol, D, integral, tol=1e-6, max_cuts=None, iomr=False):
         exempt: increase-only cannot lower a heavy cover edge that a frozen detour undercuts, so such a
         cycle must still be hit at a light edge (this is exactly what iomr_verifier checks). Dropping the
         skip is what makes the integral oracle sound AND complete for IOMR, not just a column change.
+
+    TWO TOLERANCES, because `tol` was doing two unrelated jobs:
+      break_tol (1e-9) -- "is this edge undercut?". MUST match verifier()'s tol, or the oracle declares
+                          convergence on a cover the verifier rejects. At the old shared 1e-6 the oracle was
+                          blind to every violation with a gap in [1e-9, 1e-6). (AUDIT_REPORT.md B21.)
+      tol       (1e-6) -- "is this LP constraint violated?" (sum of y over the cut < 1). An LP feasibility
+                          slack; tightening it to 1e-9 would spam near-tight cuts and slow convergence.
     """
     if integral:
         S = {e for e in D if sol[D[e]] > 0.5}
@@ -805,7 +837,7 @@ def _violated_cuts(G, sol, D, integral, tol=1e-6, max_cuts=None, iomr=False):
         if integral and not iomr and (u, v) in S:           # general MR: cover edges are re-weightable
             continue
         a, b = idx[u], idx[v]
-        if dist[a, b] < G[u][v]["weight"] - tol:            # (u,v) undercut -> broken cycle through it
+        if dist[a, b] < G[u][v]["weight"] - break_tol:      # (u,v) undercut -> broken cycle through it
             cols = {D[(verts[i], verts[j])] for (i, j) in find_shortest_path(a, b, pred[a])}
             if not iomr:
                 cols.add(D[(u, v)])                         # general MR: heavy edge may also be hit

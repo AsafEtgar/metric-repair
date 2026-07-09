@@ -170,17 +170,22 @@ tasks**. Total **88 configs / 1760 tasks** @ 20 seeds.
 ## 4. Before launching
 
 ### 4.1 Harness wiring — DONE
-Both grids are wired and verified to enumerate: **RGG-large = 32 configs / 640 tasks** (S1 + P2size size ladder,
-S2 + S2k density at n=2000); **GEO-large = 49 configs / 980 tasks** (exp1 3 p × 11 n; exp2b 16 α). Suite = **16
-algos** (no ILP, no rsp) in both, via the per-grid `DROP_LARGE` / `drop_ilp` filter. `--grid large` on both
-runners; `submit_{dsq,rgg_dsq}.sh large` request **16 GB / 4 h**; outputs gitignored. **Current knobs:** 11
-n-points (`LARGE_NS`), 20 seeds (`SAMPLES/SAMPLE_COUNT['large']`), 16 α-points — edit those to change.
+Both grids are wired and verified to enumerate: **RGG-large = 52 configs / 1040 tasks** (S1 + S1d + P2size size
+ladders, S2 + S2k density at n=2000, P2df + P2dm deflate-kNN); **GEO-large = 36 configs / 720 tasks** (exp1
+2 p × 10 n capped at n≤1500; exp2b 16 α at n=2000). These match §3.1 and the live `--count` output. Suite =
+**16 algos** (no ILP, no rsp) in both, via the per-grid `DROP_LARGE` / `drop_ilp` filter. `--grid large` on both
+runners; `submit_{dsq,rgg_dsq}.sh large` request **16 GB / 4 h**; outputs gitignored. **Current knobs:** the
+exp1 mesh `np.linspace(1000, 1500, 10)` in `harness._points_large` (NOT the dead `LARGE_NS`), 20 seeds
+(`SAMPLES/SAMPLE_COUNT['large']`), 16 α-points — edit those to change.
+
+> Earlier revisions of this section claimed 640 / 980 tasks. That predated the exp1 mesh change (3 p × 11 n →
+> 2 p × 10 n, capped at n≤1500 by the probe) and the RGG deflate/kNN additions. Trust `--count`, not prose.
 
 ### 4.2 Cluster run (after the probe)
 ```bash
 git pull && module load miniconda && conda activate metricrepair
-python experiments/run_rgg_task.py --grid large --count      # -> 640
-python experiments/run_task.py     --grid large --count      # -> 980
+python experiments/run_rgg_task.py --grid large --count      # -> 1040
+python experiments/run_task.py     --grid large --count      # -> 720
 bash experiments/submit_rgg_dsq.sh metricrepair <PI_netid> large   # -> results_rgg_large/ (16g, 4h)
 bash experiments/submit_dsq.sh     metricrepair <PI_netid> large   # -> results_large/
 sbatch dsq_rgg_large_submit.sh ; sbatch dsq_large_submit.sh

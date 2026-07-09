@@ -75,11 +75,19 @@ def _task_refs(g):
         r = g.loc[g["algo"] == algo, col]
         return r.iloc[0] if len(r) else np.nan
 
-    if pd.notna(val("gmr_ilp", "size")) and val("gmr_ilp", "converged") is True:
+    def exact_ok(algo):
+        """`converged` alone is not enough. When status != "ok", harness._aggregate ANDed converged over only
+        the components that returned and summed size/exact_opt over those same few -- a partial optimum that
+        reads as complete (27 such ILP rows in results_rgg_full_all.csv). And an unverified cover is not an
+        optimum. See AUDIT_REPORT.md A2. Falling back to the LP bound is honest and is labelled as such."""
+        return (pd.notna(val(algo, "size")) and val(algo, "converged") is True
+                and val(algo, "status") == "ok" and val(algo, "valid") == 1)
+
+    if exact_ok("gmr_ilp"):
         gmr, gk = val("gmr_ilp", "size"), "exact"
     else:
         gmr, gk = val("gmr_lp_naive", "lp_bound"), "lower_bound"
-    if pd.notna(val("iomr_ilp", "size")) and val("iomr_ilp", "converged") is True:
+    if exact_ok("iomr_ilp"):
         iomr, ik = val("iomr_ilp", "size"), "exact"
     else:
         iomr, ik = val("iomr_lp_naive", "lp_bound"), "lower_bound"
@@ -189,8 +197,23 @@ def main():
     df = add_x(df)
     report(df)
 
-    edit = aggregate_edit(df)
-    knn = aggregate_knn(df)
+    # This analyzer previously neither filtered NOR reported invalid covers, and has no timeout_rate column,
+    # so a run whose covers silently stopped verifying looked identical to a clean one. An invalid cover is
+    # an insufficient cover -> |S| understated -> size_med / ratio_domr_med biased in the algorithm's favour.
+    if "status" in df:
+        n_to = int((df["status"] == "timeout").sum())
+        n_sk = int(df["status"].astype(str).str.startswith("skipped").sum())
+        if n_to or n_sk:
+            print(f"\nnote: {n_to} timed-out and {n_sk} skipped rows -- these carry size=NaN and are silently "
+                  f"dropped by median(); the per-group n_samples still counts them (AUDIT_REPORT.md A7).")
+    inval = df["valid"] == 0
+    if inval.any():
+        print(f"\nDROPPING {int(inval.sum())} invalid-cover rows from the aggregate:")
+        print(df[inval].groupby(["sweep", "algo"]).size().to_string())
+    df_ok = df[~inval]
+
+    edit = aggregate_edit(df_ok)
+    knn = aggregate_knn(df_ok)
 
     rows_path = os.path.join(a.outdir, "rgg_rows_with_ratio.csv")   # rgg_ prefix: geometric writes rows_with_ratio.csv
     edit_path = os.path.join(a.outdir, "summary_edit.csv")

@@ -144,8 +144,10 @@ def run_isolated(fn, CC, verify_fn, timeout_s):
     # (ripe: 421k edges) far exceeds the ~64KB OS pipe buffer. If we joined first, the child would block in
     # send() waiting for a reader while we block in join() waiting for it to exit -> deadlock, and the algo
     # burns its ENTIRE timeout (this is what killed the heur run: 11 algos x 1800s deadlock >> walltime -> no
-    # csv). poll() lets recv() start reading, which unblocks the child. (harness._child sends no cover, so its
-    # p.join() variant is safe -- only the real harness ships large payloads.)
+    # csv). poll() lets recv() start reading, which unblocks the child.
+    #
+    # All three harnesses now use this pattern; harness.run_isolated ships a cover too (for light_frac).
+    # The cap applies to time-to-FIRST-BYTE, not to the whole transfer.
     if not parent_conn.poll(timeout_s):        # no result within the cap -> genuinely still computing -> kill
         p.terminate(); p.join(5)
         if p.is_alive():                       # stuck in a C call / uninterruptible -> SIGKILL so the cap is hard
@@ -153,7 +155,8 @@ def run_isolated(fn, CC, verify_fn, timeout_s):
         return {"status": "timeout", "wall": time.perf_counter() - t0}
     try:
         out = parent_conn.recv()               # child is mid-send -> our read drains the pipe and unblocks it
-    except EOFError:                            # child died before sending (segfault / OOM-kill)
+    # EOFError = died before sending; OSError = died mid-frame (OOM-killed while pickling a large cover).
+    except (EOFError, OSError):
         out = {"status": "killed"}
     p.join()
     return out
@@ -212,6 +215,9 @@ def run_real(graph, mode, seed, outdir, covers_dir):
     elapsed = 0.0
     for (name, variant, vkey, n_max, region_gated, fn) in _suite_for(mode, seed):
         base = {**meta, "algo": name, "variant": variant, **{f: None for f in RUN_FIELDS}}
+        # The ILP is EXEMPT from the task budget on purpose: it is a once-ever exact reference given its own
+        # 17h array and 17:30 walltime, so a 3h budget would abort it before it can converge. Consequence
+        # (AUDIT_REPORT.md B5, NOT fixed): the ILP path has NO task-level cap at all.
         if name not in ILP_ALGOS and elapsed >= REAL_TASK_BUDGET_S:   # budget spent -> skip rest (csv still lands)
             base["status"] = "skipped_time"
         elif n_max is not None and giant > n_max:
@@ -222,8 +228,14 @@ def run_real(graph, mode, seed, outdir, covers_dir):
             base.update(status="ok", size=0, valid=1, cpu=0.0, wall=0.0, peak_mb=0.0)
         else:
             to = ILP_TIMEOUT_S if name in ILP_ALGOS else REAL_HEUR_TIMEOUT_S
+            # `to` is charged PER NON-METRIC COMPONENT, not per algorithm. One algorithm on a graph with k
+            # such components can therefore burn k*to of wall before the budget above is ever re-checked
+            # (it is only tested BETWEEN algorithms). Safe today because every processed graph has exactly one
+            # non-metric component. See AUDIT_REPORT.md B4 (NOT fixed).
             results = [run_isolated(fn, CC, VERIFY[vkey], to) for CC in nonmetric]
             base.update(_aggregate(results))
+            # NOTE: this sums the CHILD-measured wall, which stops before verify_fn runs. verifier() does a full
+            # dense APSP, so `elapsed` under-counts real time on big graphs (B13, NOT fixed).
             elapsed += base.get("wall") or 0.0
             covers = [{_norm(u, v) for (u, v) in r["cover"]} for r in results if r.get("cover") is not None]
             if covers:

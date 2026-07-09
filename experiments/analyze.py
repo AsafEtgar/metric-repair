@@ -76,16 +76,27 @@ def _task_refs(g):
         r = g.loc[g["algo"] == algo, col]
         return r.iloc[0] if len(r) else np.nan
 
+    def exact_ok(algo):
+        """An ILP row is the exact optimum only if it converged AND ran to completion AND its cover verifies.
+        `converged` alone lies when status != "ok": harness._aggregate ANDs converged over just the components
+        that returned, while summing size/exact_opt over those same few -- so a partially timed-out graph
+        reports a partial optimum as complete. And a converged-but-invalid cover is no optimum at all
+        (AUDIT_REPORT.md A1/A2). Falling through to the LP bound is honest and is flagged as such."""
+        return (pd.notna(val(algo, "size")) and val(algo, "converged") is True
+                and val(algo, "status") == "ok" and val(algo, "valid") == 1)
+
     # GMR: exact ILP if converged; else the integral LP (valid rounded support); else its LP lower bound.
-    if pd.notna(val("gmr_ilp", "size")) and val("gmr_ilp", "converged") is True:
+    if exact_ok("gmr_ilp"):
         gmr, gk = val("gmr_ilp", "size"), "exact"
-    elif pd.notna(val("gmr_lp_rsp", "size")) and val("gmr_lp_rsp", "valid") == 1:
+    elif (pd.notna(val("gmr_lp_rsp", "size")) and val("gmr_lp_rsp", "valid") == 1
+          and val("gmr_lp_rsp", "status") == "ok"):
+        # The GMR covering polytope is integral here, so a VALID rounded support IS the optimum.
         gmr, gk = val("gmr_lp_rsp", "size"), "exact"
     else:
         gmr, gk = val("gmr_lp_rsp", "lp_bound"), "lower_bound"
 
     # IOMR: exact ILP where it converged; else the tightest LP lower bound (rsp preferred over naive).
-    if pd.notna(val("iomr_ilp", "size")) and val("iomr_ilp", "converged") is True:
+    if exact_ok("iomr_ilp"):
         iomr, ik = val("iomr_ilp", "size"), "exact"
     else:
         lbs = [x for x in (val("iomr_lp_rsp", "lp_bound"), val("iomr_lp_naive", "lp_bound")) if pd.notna(x)]
@@ -131,8 +142,17 @@ def aggregate(df):
     keys = ["exp", "model", "p", "x", "algo", "variant"]
     g = df.groupby(keys, dropna=False)
 
-    named = {"n_samples": ("sample", "nunique")}
-    for c in DIST_COLS:
+    # n_samples counts every sample in the group, but median()/mean() silently skip the NaN rows that
+    # timeouts, kills and skips leave behind -- so a statistic can rest on far fewer samples than n_samples
+    # advertises, and the dropped instances are the HARD ones (skipped_n / skipped_H gate on per-draw size
+    # and |H|), biasing every median optimistically. n_ok is the honest denominator. See AUDIT_REPORT.md A7.
+    named = {"n_samples": ("sample", "nunique"),
+             "n_ok": ("ratio_domr", "count")}                  # count() ignores NaN -> finite-sample size
+
+    # light_frac was added after the geometric-small campaign, so its CSVs (results_small_all.csv -- the
+    # source of the paper's geometric table) do not carry the column. Requiring it made this analyzer unable
+    # to reprocess its own published data. Aggregate whatever columns the frame actually has.
+    for c in [c for c in DIST_COLS if c in df.columns]:
         named[f"{c}_med"] = (c, "median")
         named[f"{c}_q25"] = (c, _q(.25))
         named[f"{c}_q75"] = (c, _q(.75))
@@ -245,7 +265,16 @@ def main():
     df = load(a.results)
     problems = validate(df)
     df = derive(df)
-    summ = aggregate(df)
+
+    # Invalid covers are INSUFFICIENT covers: |S| is understated, so ratio/ratio_domr flatter the algorithm.
+    # In the geometric data these are 306 gmr_lp_rsp rows (the known LP gap) plus 23 l1sep_iomr rows, which
+    # are l1_separation exiting at max_rounds without converging and without saying so (AUDIT_REPORT.md A4).
+    # `valid` is NaN for LP-bound algos and timed-out rows, so test != 0 rather than == 1.
+    inval = df["valid"] == 0
+    if inval.any():
+        print(f"\nDROPPING {int(inval.sum())} invalid-cover rows from the aggregate:")
+        print(df[inval].groupby("algo").size().to_string())
+    summ = aggregate(df[~inval])
     fit = runtime_weight_fit(df)
     rfit = rounds_scaling_fit(df)
 

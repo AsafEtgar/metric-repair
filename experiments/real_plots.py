@@ -74,16 +74,23 @@ def _heatmap(summ, fam, ycol, name, title, outroot, log=False, fmt="{:.1f}"):
     im = ax.imshow(M, aspect="auto", cmap="viridis_r", norm=norm)
     ax.set_xticks(range(len(graphs))); ax.set_xticklabels(graphs, rotation=60, ha="right", fontsize=7)
     ax.set_yticks(range(len(algos))); ax.set_yticklabels(algos, fontsize=8)
-    # red x-labels where the reference is only the LP bound (ILP absent/timed-out)
+    # Red x-labels where the column has NO trustworthy exact optimum, so its ratios are against a bound.
+    # This now also catches the graphs whose ILP "converged" to an unverifiable cover: real_analyze._graph_refs
+    # requires status=="ok" and valid==1, so those graphs fall through to ref_kind="lower_bound" and turn red.
+    # Previously they were tagged "exact" and looked trustworthy (AUDIT_REPORT.md A8).
     rk = summ[summ["family"] == fam].groupby("graph")["ref_kind"].first()
     for t, g in zip(ax.get_xticklabels(), graphs):
-        if rk.get(g) == "lower_bound":
+        if rk.get(g) in ("lower_bound", "none"):
             t.set_color("tab:red")
     for i in range(len(algos)):
         for j in range(len(graphs)):
             if np.isfinite(M[i, j]):
+                # Pick the text colour from the MAPPED luminance, not from `norm is None`. Under LogNorm the
+                # old test made every annotation black, including on the darkest (highest-ratio) cells.
+                shade = norm(M[i, j]) if norm is not None else \
+                    (M[i, j] - finite.min()) / max(finite.max() - finite.min(), 1e-12)
                 ax.text(j, i, fmt.format(M[i, j]), ha="center", va="center", fontsize=6,
-                        color="white" if (norm is None and M[i, j] > np.nanmean(finite)) else "black")
+                        color="white" if shade > 0.55 else "black")
     fig.colorbar(im, ax=ax, shrink=0.7, label=title.split("—")[-1].strip())
     ax.set_title(f"{title} — {FAM_TITLE[fam]}", fontsize=10)
     fig.tight_layout()

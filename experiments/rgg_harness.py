@@ -327,7 +327,9 @@ def run_isolated_rgg(fn, CC, verify_fn, timeout_s):
         return {"status": "timeout", "wall": time.perf_counter() - t0}
     try:
         out = parent_conn.recv()                              # child mid-send -> our read drains + unblocks it
-    except EOFError:                                          # child died before sending (segfault / OOM-kill)
+    # EOFError = died before sending; OSError = died mid-frame (OOM-killed while pickling a large cover).
+    # Catching only the first let the second escape and destroy the whole task's CSV. See AUDIT_REPORT.md A5.
+    except (EOFError, OSError):
         out = {"status": "killed"}
     p.join()
     return out
