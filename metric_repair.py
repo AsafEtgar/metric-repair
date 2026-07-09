@@ -617,11 +617,18 @@ def l1_separation(G, general=False, complete_graph=False, solver="highs-ipm", re
     x = np.zeros(m)
     for r in range(max_rounds):
         wprime = w + x
-        A = np.zeros((n, n))
+        # Non-edges must be inf, not 0. Handing a dense 0-filled matrix to shortest_path makes SciPy mask
+        # every entry within atol=1e-8 of zero as a NON-EDGE (np.ma.masked_values), silently deleting any
+        # edge whose current weight w' is that small. That blinded this oracle exactly as it blinded
+        # _apsp_positions -- see AUDIT_REPORT.md A1 -- and left l1sep_{gmr,iomr} returning covers that fail
+        # verification on the graphs carrying the EPS=1e-9 inversion floor.
+        A = np.full((n, n), np.inf)
+        np.fill_diagonal(A, 0.0)
         for (u, v) in sorted_edges(H):                       # adjacency in the CURRENT weights w'
             a, b = idx[u], idx[v]
             A[a, b] = A[b, a] = wprime[D[(u, v)]]
-        dist, pred = shortest_path(A, method="FW", directed=False, return_predecessors=True)
+        dist, pred = shortest_path(csgraph_from_dense(A, null_value=np.inf), method="FW",
+                                   directed=False, return_predecessors=True)
         new_rows = []
         for (u, v) in sorted_edges(H):
             a, b = idx[u], idx[v]
@@ -708,13 +715,21 @@ def shortest_path_cover(G, general=True):
     verts = sorted(G.nodes())
     idx = {v: i for i, v in enumerate(verts)}
     n = len(verts)
-    A = np.zeros((n, n))
+    # inf = "no edge", NOT 0. A dense 0-filled matrix makes SciPy mask every entry within atol=1e-8 of zero
+    # as absent, silently deleting genuinely tiny edges (AUDIT_REPORT.md A1). 0 previously served double duty
+    # here as both the absent-marker and the delete operation, so the sentinel changes in both places.
+    A = np.full((n, n), np.inf)
+    np.fill_diagonal(A, 0.0)
     for u, v, w in sorted_edges(G, weight=True):
         A[idx[u], idx[v]] = A[idx[v], idx[u]] = float(w)
     S = set()
     while True:
-        dist, pred = shortest_path(A, method="FW", directed=False, return_predecessors=True)
-        ii, jj = np.where(np.triu(A, 1) > 0)            # current edges, in label-sorted order
+        dist, pred = shortest_path(csgraph_from_dense(A, null_value=np.inf), method="FW",
+                                   directed=False, return_predecessors=True)
+        # np.triu zeroes the lower triangle and diagonal, so surviving edges are the FINITE positive entries.
+        # `> 0` alone would now also select the inf non-edges.
+        U = np.triu(A, 1)
+        ii, jj = np.where(np.isfinite(U) & (U > 0))     # current edges, in label-sorted order
         found = False
         to_delete = []
         for a, b in zip(ii.tolist(), jj.tolist()):
@@ -729,8 +744,8 @@ def shortest_path_cover(G, general=True):
                     to_delete.append((i, j))
         if not found:
             return S
-        for i, j in to_delete:                            # batch-delete after the pass
-            A[i, j] = A[j, i] = 0.0
+        for i, j in to_delete:                            # batch-delete after the pass -> inf, not 0
+            A[i, j] = A[j, i] = np.inf
 
 
 def left_edge_heuristic(G):
