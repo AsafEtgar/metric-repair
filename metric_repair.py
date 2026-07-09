@@ -586,7 +586,12 @@ def _l1_separation_phi(rows, m):
 
 
 def l1_separation(G, general=False, complete_graph=False, solver="highs-ipm", reweight=0,
-                  max_rounds=200, tol=1e-6, min_weight=1.0, verbose=False):
+                  max_rounds=200, tol=1e-9, min_weight=1.0, verbose=False):
+    # `tol` is used in exactly ONE place: the metric-break test `dist < w' - tol`. It must therefore match
+    # verifier()'s tol (1e-9). At the old 1e-6 this oracle was blind to every break with a gap in
+    # [1e-9, 1e-6) -- not on the initial graph, where gaps are large, but on the REWEIGHTED graph w' = w + x
+    # after the LP has pushed edges to within a whisker of metric. It would then declare w' metric and return
+    # a cover the verifier rejects. See AUDIT_REPORT.md B21.
     """L1 weight-correction repair via CUTTING PLANES -- no chordless-cycle enumeration.
 
     The enumerated L1 (l1_minimization) materialises every polygon inequality of the completion up front
@@ -649,6 +654,12 @@ def l1_separation(G, general=False, complete_graph=False, solver="highs-ipm", re
             c = np.ones(m)
             for _ in range(reweight + 1):
                 x = linprog(c, A_ub=-phi, b_ub=b_ub, bounds=(0, None), method=solver).x
+                # HiGHS honours `bounds` only to its primal feasibility tolerance (~1e-7), so x can come back
+                # at -1e-8. Harmless on ordinary weights, fatal on tiny ones: deflate mints edges as small as
+                # 2e-10 (its guard only rejects gap <= 1e-9), so w + x goes NEGATIVE and Floyd-Warshall raises
+                # NegativeCycleError. Before the A1 fix those edges were silently deleted, which hid this.
+                # The GMR branch below is already safe -- its bounds floor w + x at min(min_weight, w_e) > 0.
+                x = np.maximum(x, 0.0)                       # enforce the model's own constraint
                 c = 1.0 / (np.abs(x) + 1e-3)
         else:                                                # free-sign x = p - n: general MR
             Aub = sparse.hstack([-phi, phi]).tocsr()

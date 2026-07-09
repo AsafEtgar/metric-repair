@@ -36,16 +36,10 @@ NUM = ("size", "valid", "lp_bound", "exact_opt", "rounds", "cuts", "cpu", "wall"
        "sample", "seed", "V", "E", "w_min", "w_max", "giant")
 
 # each OFAT sweep varies exactly one knob -> that's its x-axis; S6 additionally varies frac_q (a 2nd series).
-SWEEP_X = {
-    "S1": "n", "P2size": "n", "POCsize_inflate": "n", "POCsize_jitter": "n",
-    "S2": "deg", "S2k": "k",
-    "S3": "magnitude", "S3d": "magnitude", "S6": "magnitude",
-    "S4i": "frac_q", "S4d": "frac_q",
-    "S5a": "n_jitter", "P2n": "n_jitter",
-    "S5b": "jitter", "P2j": "jitter",
-    "S5c": "subset_s", "P2s": "subset_s",
-}
-SWEEP_SERIES = {"S6": "frac_q"}                 # 2D sweep: keep the secondary knob as a line series
+# Single source of truth, shared with rgg_plots. This map used to be duplicated here and had fallen behind:
+# S1d, S1m, S3m, S4m, P2df, P2dm, P2mf, P2mm and every RR_* sweep were missing, so add_x() left their x as
+# NaN and the plot layer dropped them without a word. See experiments/sweeps.py.
+from sweeps import SWEEP_X, SWEEP_SERIES        # noqa: E402
 
 GMR_REF_VARIANTS = {"GMR", "DOMR"}              # DOMR covers are valid GMR covers -> compare to the GMR OPT
 DIST_EDIT = ["edit_precision", "edit_recall", "light_frac", "size", "ratio", "ratio_domr", "cpu", "wall", "rounds", "cuts"]
