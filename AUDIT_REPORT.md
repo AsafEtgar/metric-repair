@@ -35,9 +35,31 @@ healthy tasks still resolve to `exact` (no over-rejection).
 predates — so the analyzer **could not reprocess `results_small_all.csv`, the source of the paper's own
 geometric table.** Now fixed.
 
+**A1 is FIXED and CONFIRMED on the cluster — in THREE call sites, not one.**
+
+The first fix patched only `_apsp_positions`. The re-run then left **exactly 4 invalid rows on each of the
+three graphs**, which was the diagnosis: two more functions built `A = np.zeros((n, n))` and handed it
+straight to `shortest_path`.
+
+| call site | algorithms it broke |
+|---|---|
+| `_apsp_positions` (`metric_repair.py:785`) | `gmr_ilp`, `iomr_ilp`, `gmr_lp_naive`, `iomr_lp_naive`, `*_thr_naive`, `*_bestofk`, `*_rand` |
+| `l1_separation` (`:620`) | `l1sep_gmr`, `l1sep_iomr` |
+| `shortest_path_cover` (`:711`) | `spc_gmr`, `spc_iomr` |
+
+`shortest_path_cover` needed more than a sentinel swap: `0` served double duty as the absent-edge marker
+*and* the delete operation, and `np.where(np.triu(A,1) > 0)` would have enumerated the new `inf` non-edges
+as real. `all_pairs_distances` was correct throughout because it uses `nx.to_scipy_sparse_array(format="csr")`
+— which is exactly why `verifier()` could always see what all three oracles could not.
+
+Invalid covers on the real data: **198 → 12 → 0.** The three excluded graphs rejoin the study.
+Swept: no `np.zeros((n,n))` is fed to csgraph anywhere; the only other `shortest_path` caller is sparse.
+
+**Lesson worth keeping:** the first fix was verified (the ILP produced valid covers, the four graphs verified)
+and was still incomplete. What caught it was the `valid` column surviving into the health check. A fix
+verified only on the path you suspected is not a fix.
+
 **Still NOT fixed, deliberately:**
-* **A1** — the root cause. Fixing `_apsp_positions` changes algorithm output, so it must not land mid-campaign.
-  Apply it after the current jobs drain, then re-run the ILP + LP-rounding family on the four sub-`1e-8` graphs.
 * **A4** — `l1_separation` still returns silently at `max_rounds`. Harmless now that A3 filters its invalid
   covers, but it should raise or return a converged flag.
 * All **B-series** latent findings.
