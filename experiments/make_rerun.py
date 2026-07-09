@@ -48,6 +48,20 @@ def _mtime_before(path, cutoff):
     return cutoff is not None and os.path.getmtime(path) < cutoff
 
 
+def _w_min(path, _cache={}):
+    """Smallest edge weight of the CORRUPTED graph this task ran on. A meta field, identical on every row,
+    so read only the first. Cached: --w-min-le would otherwise re-read 5000 files."""
+    if path not in _cache:
+        import csv
+        try:
+            with open(path, newline="") as f:
+                row = next(csv.DictReader(f), None)
+            _cache[path] = float(row["w_min"]) if row and row.get("w_min") else None
+        except (OSError, ValueError, KeyError):
+            _cache[path] = None
+    return _cache[path]
+
+
 def _parse_date(s):
     if not s:
         return None
@@ -65,24 +79,34 @@ def synthetic(a):
     cutoff = _parse_date(a.stale_before)
     bases = set(a.bases.split(",")) if a.bases else set()
 
-    # The three reasons are independent -- a task can be both stale AND affected -- so classify with plain
-    # `if`s and take the union. (An `elif` chain would under-count and, worse, hide an affected task behind
-    # a stale one.)
+    # The reasons are independent -- a task can be both stale AND affected -- so classify with plain `if`s
+    # and take the union. (An `elif` chain would under-count and, worse, hide an affected task behind a
+    # stale one.)
+    #
+    # --w-min-le is the EXACT test for A1 exposure. Every task CSV records `w_min`, the smallest edge weight
+    # of the corrupted graph the algorithms actually ran on. A1 deleted every edge of weight <= 1e-8 from the
+    # separation oracle's view, so `w_min <= 1e-8` <=> this task's oracle was blind. That beats guessing by
+    # base name: deflate sets w = gap/magnitude and only rejects gap <= 1e-9, so it can MINT a sub-1e-8 edge
+    # on any float base, not just on the ones that ship the EPS=1e-9 floor from the _lin/_log inversions.
     missing, stale, affected = [], [], []
     for i, (cfg, _s) in enumerate(tasks):
         fp = os.path.join(a.outdir, "task_%06d.csv" % i)
         if not os.path.exists(fp):
             missing.append(i)
-        elif _mtime_before(fp, cutoff):
+            continue
+        if _mtime_before(fp, cutoff):
             stale.append(i)
         if bases and cfg.get("base") in bases:
-            affected.append(i)          # forced regardless of whether the CSV is present and fresh
+            affected.append(i)
+        elif a.w_min_le is not None and _w_min(fp) is not None and _w_min(fp) <= a.w_min_le:
+            affected.append(i)
 
     idxs = sorted(set(missing) | set(stale) | set(affected))
     print("grid=%s  outdir=%s  total tasks=%d" % (a.grid, a.outdir, len(tasks)))
+    why = a.bases or ("w_min <= %g" % a.w_min_le if a.w_min_le is not None else "none")
     print("  MISSING  %5d" % len(missing))
     print("  STALE    %5d  (mtime < %s)" % (len(stale), a.stale_before or "n/a"))
-    print("  AFFECTED %5d  (bases: %s)" % (len(affected), a.bases or "none"))
+    print("  AFFECTED %5d  (%s)" % (len(affected), why))
     print("  -> RE-RUN %4d tasks" % len(idxs))
     if stale:
         print("\n  NOTE: stale files are PRE-FIX survivors. Delete them so a failed re-run cannot leave them"
@@ -147,6 +171,9 @@ def main():
     ap.add_argument("--real-array", choices=["heur", "ilp"], default=None)
     ap.add_argument("--graphs", default=None, help="comma list, or the literal 'A1' for the A1-affected set")
     ap.add_argument("--bases", default=None, help="comma list of RGG realrec bases to force re-run")
+    ap.add_argument("--w-min-le", type=float, default=None,
+                    help="force re-run of tasks whose recorded w_min <= this. Use 1e-8 to select exactly "
+                         "the tasks whose separation oracle was blinded by A1.")
     ap.add_argument("--outdir", default=None)
     ap.add_argument("--covers", default="results_real_covers")
     ap.add_argument("--stale-before", default=None, help="YYYY-MM-DD; CSVs older than this are pre-fix")

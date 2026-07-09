@@ -46,17 +46,24 @@ module load miniconda && conda activate metricrepair
 SETUP='module load miniconda && source "$(conda info --base)/etc/profile.d/conda.sh" && conda activate metricrepair'
 DAY=2026-07-08          # <-- the date the current campaign STARTED; anything older is pre-fix
 
-# --- synthetic: missing + stale ------------------------------------------------------------------
+# --- synthetic: missing + stale + any A1-exposed task ---------------------------------------------
 # results_rgg is the one REUSED directory (it held the old 3160-task grid). Always pass --stale-before.
-python experiments/make_rerun.py --harness rgg --grid full      --outdir results_rgg          --stale-before $DAY --setup "$SETUP" --joblist rerun_rgg_full.txt
-python experiments/make_rerun.py --harness rgg --grid large     --outdir results_rgg_large    --setup "$SETUP" --joblist rerun_rgg_large.txt
-python experiments/make_rerun.py --harness rgg --grid mixed     --outdir results_rgg_mixed    --setup "$SETUP" --joblist rerun_rgg_mixed.txt
-python experiments/make_rerun.py --harness rgg --grid largemix  --outdir results_rgg_largemix --setup "$SETUP" --joblist rerun_rgg_largemix.txt
-python experiments/make_rerun.py --harness geometric --grid large --outdir results_large      --setup "$SETUP" --joblist rerun_geo_large.txt
+# --w-min-le 1e-8 is a cheap safety net everywhere: it should select 0 tasks on the pure-synthetic grids
+# (RGG edge weights are Euclidean distances, min ~1/n; geometric weights are integers >= 1). If it selects
+# anything, deflate manufactured a sub-1e-8 weight and that task genuinely needs the fixed oracle.
+python experiments/make_rerun.py --harness rgg --grid full      --outdir results_rgg          --stale-before $DAY --w-min-le 1e-8 --setup "$SETUP" --joblist rerun_rgg_full.txt
+python experiments/make_rerun.py --harness rgg --grid large     --outdir results_rgg_large    --w-min-le 1e-8 --setup "$SETUP" --joblist rerun_rgg_large.txt
+python experiments/make_rerun.py --harness rgg --grid mixed     --outdir results_rgg_mixed    --w-min-le 1e-8 --setup "$SETUP" --joblist rerun_rgg_mixed.txt
+python experiments/make_rerun.py --harness rgg --grid largemix  --outdir results_rgg_largemix --w-min-le 1e-8 --setup "$SETUP" --joblist rerun_rgg_largemix.txt
+python experiments/make_rerun.py --harness geometric --grid large --outdir results_large      --w-min-le 1e-8 --setup "$SETUP" --joblist rerun_geo_large.txt
 
-# --- realrec: missing + FORCE the two fish1 bases (they carry sub-1e-8 edges) ---------------------
+# --- realrec: missing + EXACTLY the A1-exposed tasks -----------------------------------------------
+# `w_min` (a meta field in every CSV) is the smallest edge weight of the corrupted graph the algorithms ran
+# on. A1 deleted edges of weight <= 1e-8 from the oracle's view, so w_min <= 1e-8 <=> this task's oracle was
+# blind. Prefer this over --bases: deflate sets w = gap/magnitude and only rejects gap <= 1e-9, so it can
+# MINT a sub-1e-8 edge on any float base, not just the ones carrying the EPS=1e-9 inversion floor.
 python experiments/make_rerun.py --harness rgg --grid realrec --outdir results_rgg_realrec \
-    --bases fish1_ten_lin,fish1_ten_log --setup "$SETUP" --joblist rerun_realrec.txt      # ~360 + missing
+    --w-min-le 1e-8 --setup "$SETUP" --joblist rerun_realrec.txt
 
 # --- real: the four A1-affected graphs, both arrays. ripe_atlas__gmr_ilp stays excluded. ----------
 python experiments/make_rerun.py --real-array heur --graphs A1 --exclude-graphs ripe_atlas --setup "$SETUP" --joblist rerun_real_heur.txt   # 4 x 31 = 124
