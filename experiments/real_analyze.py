@@ -103,9 +103,17 @@ def _q(p):
 def aggregate(df):
     """Per (graph, family, algo, variant): median/IQR/mean/std of the science columns (single-valued for the
     deterministic/ILP algos, a real distribution for the 30-seed randomized ones), plus per-graph meta."""
+    df = df.copy()
+    # Verified-sample count, matching the RGG/geometric convention and the design's "honest denominator":
+    # n_ok = runs that completed; n_usable = runs that completed AND produced a verifying cover -- the sample
+    # size actually behind every median below. (invalid covers are already dropped upstream, so n_usable and
+    # the median rest on the same rows; reporting the count makes that explicit rather than implicit.)
+    df["_usable"] = (df["status"] == "ok") & (pd.to_numeric(df["valid"], errors="coerce") == 1)
     keys = ["graph", "family", "algo", "variant"]
     g = df.groupby(keys, dropna=False)
     named = {"n_seeds": ("seed", "nunique"),
+             "n_ok": ("status", lambda s: (s == "ok").sum()),
+             "n_usable": ("_usable", "sum"),
              "n": ("n", "first"), "m": ("m", "first"), "H": ("H", "first"),
              "nonmetric_frac": ("nonmetric_frac", "first"), "ref": ("ref", "first"),
              "ref_kind": ("ref_kind", "first"), "peak_mb": ("peak_mb", "median")}
