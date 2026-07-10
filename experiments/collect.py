@@ -47,8 +47,12 @@ def main():
 
     files = sorted(glob.glob(os.path.join(a.indir, "task_*.csv")))
     if not files:
-        print(f"no task_*.csv in {a.indir}")
-        return
+        # exit NON-ZERO. Returning 0 here made reanalyze_all.sh sail past an empty directory under `set -e`,
+        # and every downstream analyzer then read the PREVIOUS run's `*_all.csv` -- reporting stale invalid
+        # covers and stale starvation tables as if they were fresh. An empty output directory means the
+        # campaign has not run, which is a hard error, not a no-op.
+        sys.exit(f"no task_*.csv in {a.indir} -- the campaign has not produced output. Refusing to continue; "
+                 f"downstream steps would silently reuse a stale {a.out}.")
 
     problems = []
 

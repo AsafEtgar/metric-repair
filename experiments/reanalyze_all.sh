@@ -19,6 +19,40 @@ mkdir -p analysis
 
 banner() { printf '\n\033[1m=== %s ===\033[0m\n' "$*"; }
 
+# ---------------------------------------------------------------- preflight
+# Run this on a live campaign and you get a report that LOOKS complete and is not. Two ways it lies:
+#   * an empty output dir made collect.py exit 0, so every analyzer read the PREVIOUS run's *_all.csv;
+#   * results_real is rewritten IN PLACE, so a half-finished heur array still shows 620/621 files present.
+# Neither is detectable downstream. Refuse to start instead. FORCE=1 to override.
+banner "preflight"
+live=$(squeue --me -h -r 2>/dev/null | wc -l || echo 0)
+if [ "${live:-0}" -gt 0 ]; then
+    echo "  $live task(s) still queued or running."
+    [ "${FORCE:-0}" = "1" ] || { echo "ABORT: wait for the campaign to drain (FORCE=1 to override)."; exit 1; }
+    echo "  FORCE=1 -- proceeding on a LIVE campaign. Nothing below is trustworthy."
+fi
+
+short=0
+while IFS=: read -r dir want; do
+    [ -d "$dir" ] || { printf "  %-24s MISSING DIR (expected %s)\n" "$dir" "$want"; short=1; continue; }
+    got=$(ls "$dir"/*.csv 2>/dev/null | wc -l)
+    if [ "$got" -ne "$want" ]; then printf "  %-24s %5d / %-5d  INCOMPLETE\n" "$dir" "$got" "$want"; short=1
+    else                            printf "  %-24s %5d / %-5d  ok\n"         "$dir" "$got" "$want"; fi
+done <<EOF
+results_small:2460
+results_large:720
+results_rgg:5000
+results_rgg_large:1040
+results_rgg_mixed:840
+results_rgg_largemix:400
+results_rgg_realrec:900
+results_real:621
+EOF
+if [ "$short" -ne 0 ]; then
+    [ "${FORCE:-0}" = "1" ] || { echo "ABORT: at least one campaign is incomplete."; exit 1; }
+    echo "  FORCE=1 -- proceeding on an incomplete campaign."
+fi
+
 # ---------------------------------------------------------------- collect
 banner "collect (aborts on stale / orphan / ragged input)"
 $PY experiments/collect.py --indir results_small        --out results_small_all.csv         --harness geometric --grid small
