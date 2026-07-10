@@ -191,18 +191,42 @@ def main():
     ap.add_argument("--knn", required=True, help="summary_knn.csv from rgg_analyze.py")
     ap.add_argument("--outdir", default="analysis/figs/rgg",
                     help="root for the figures; per-family gmr/ and iomr/ subfolders are created under it")
+    ap.add_argument("--min-usable", type=int, default=3,
+                    help="drop any group whose median rests on fewer than this many usable samples")
     a = ap.parse_args()
 
     edit = pd.read_csv(a.edit)
     knn = pd.read_csv(a.knn)
+
+    # A median over 2 surviving seeds is not a measurement. n_usable is the count that actually backs each
+    # *_med (completed AND the cover verifies); groups below the threshold are removed rather than drawn as
+    # if they were solid. Silence here would be the survivorship bias this plot exists to avoid.
+    for nm, d in (("edit", edit), ("knn", knn)):
+        if "n_usable" in d:
+            thin = d["n_usable"] < a.min_usable
+            if thin.any():
+                print(f"  {nm}: dropping {int(thin.sum())}/{len(d)} groups with n_usable < {a.min_usable}")
+                d.drop(d.index[thin], inplace=True)
+
+    # REALREC: the five real base graphs share a sweep id (RR_inflate/RR_deflate/RR_mixed). Plotting them in
+    # one panel would median a road network together with a scRNA cosine-kNN graph. Facet by base instead --
+    # rgg_analyze.attach_base() puts the column there precisely so this is possible.
+    bases = sorted(edit["base"].dropna().unique()) if "base" in edit else []
+    facets = [(b, edit[edit["base"] == b], knn[knn["base"] == b]) for b in bases] if bases else \
+             [(None, edit, knn)]
+    if bases:
+        print(f"faceting by base graph: {bases}")
+
     sty = style_map(set(edit["algo"].dropna().unique()) | set(knn["algo"].dropna().unique()))
     print(f"loaded {len(edit)} edit groups, {len(knn)} kNN groups; "
           f"sweeps={sorted(set(edit['sweep'].dropna().unique()))}")
-    for fam in FAMILIES:
-        sub = os.path.join(a.outdir, fam)
-        os.makedirs(sub, exist_ok=True)
-        make_family(edit, knn, sty, fam, sub)
-    print(f"figures -> {a.outdir}/{{gmr,iomr}}")
+    for base, e, k in facets:
+        root = a.outdir if base is None else os.path.join(a.outdir, base)
+        for fam in FAMILIES:
+            sub = os.path.join(root, fam)
+            os.makedirs(sub, exist_ok=True)
+            make_family(e, k, sty, fam, sub)
+        print(f"figures -> {root}/{{gmr,iomr}}")
 
 
 if __name__ == "__main__":

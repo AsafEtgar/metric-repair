@@ -31,7 +31,7 @@ from metric_repair import domr_alg                                              
 from datasets import load_edgelist                                              # noqa: E402  (real bases)
 from harness import (                                                            # noqa: E402
     build_suite, _aggregate, VERIFY, RUN_FIELDS, _RSS_MB,
-    N_SAMPLES, TIMEOUT_S, ALGO_TIMEOUT, TASK_BUDGET_S, REGION_H_MAX,
+    N_SAMPLES, TIMEOUT_S, ALGO_TIMEOUT, TASK_BUDGET_S, REGION_H_MAX, task_budget,
 )
 
 # ----------------------------------------------------------------------------
@@ -410,7 +410,7 @@ KNN_FIELDS = ["knn_k", "jaccard_TC", "jaccard_TF", "recall_TF", "lift", "triplet
 RGG_CSV_FIELDS = list(RGG_META_FIELDS) + ["algo", "variant"] + RGG_RUN_FIELDS + KNN_FIELDS
 
 
-def _run(cfg, s, task_index, outdir, drop_ilp=False):
+def _run(cfg, s, task_index, outdir, drop_ilp=False, budget=TASK_BUDGET_S):
     seed = task_seed(cfg, s)
     T, H, corrupted, jittered, radius, jitter_abs = generate_rgg(cfg, seed)
     corr = {_norm(u, v) for (u, v) in corrupted}
@@ -456,7 +456,7 @@ def _run(cfg, s, task_index, outdir, drop_ilp=False):
         base = {**meta, "algo": name, "variant": variant,
                 **{f: None for f in RGG_RUN_FIELDS}, **{f: None for f in KNN_FIELDS}}
         cover_union = None
-        if elapsed >= TASK_BUDGET_S:
+        if elapsed >= budget:                        # per-grid; the large grids get 6h (harness.TASK_BUDGET)
             base["status"] = "skipped_time"
         elif n_max is not None and giant > n_max:
             base["status"] = "skipped_n"
@@ -518,4 +518,5 @@ def _run(cfg, s, task_index, outdir, drop_ilp=False):
 
 def run_one_rgg_task(task_index, outdir, grid="full"):
     cfg, s = all_tasks(grid)[task_index]
-    return _run(cfg, s, task_index, outdir, drop_ilp=(grid in ("large", "largemix", "realrec")))
+    return _run(cfg, s, task_index, outdir, drop_ilp=(grid in ("large", "largemix", "realrec")),
+                budget=task_budget(grid))

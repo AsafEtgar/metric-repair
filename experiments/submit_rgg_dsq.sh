@@ -14,7 +14,10 @@ NETID="${2:-CHANGE_ME}"
 GRID="${3:-poc}"
 if [ "$GRID" = "poc" ]; then DEFMEM=4g; elif [ "$GRID" = "large" ] || [ "$GRID" = "largemix" ]; then DEFMEM=16g
 elif [ "$GRID" = "realrec" ]; then DEFMEM=24g; else DEFMEM=8g; fi   # realrec: dimacs_ny_big n=10000 APSP dict ~8GB
-if [ "$GRID" = "large" ] || [ "$GRID" = "largemix" ] || [ "$GRID" = "realrec" ]; then TIME=04:00:00; else TIME=02:30:00; fi
+# 8h on the large grids: harness.TASK_BUDGET gives them a 6h per-task budget so every algorithm gets its
+# shot instead of being starved by whatever ran first. The budget MUST stay inside the walltime -- a task
+# killed by SLURM writes no CSV at all, whereas one stopped by the budget still lands.
+if [ "$GRID" = "large" ] || [ "$GRID" = "largemix" ] || [ "$GRID" = "realrec" ]; then TIME=08:00:00; else TIME=02:30:00; fi
 MEM="${4:-$DEFMEM}"
 MAXJOBS=64
 

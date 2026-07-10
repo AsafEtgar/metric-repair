@@ -130,9 +130,14 @@ def _q(p):
     return f
 
 
-def _dist_aggs(cols):
+def _dist_aggs(cols, have=None):
+    """Aggregate only the columns the frame actually HAS. `light_frac` was added after several campaigns, so
+    demanding it made this analyzer unable to reprocess its own older CSVs -- the same schema-drift crash
+    analyze.py had. Pass `have=df.columns` to be tolerant."""
     named = {}
     for c in cols:
+        if have is not None and c not in have:
+            continue
         named[f"{c}_med"] = (c, "median")
         named[f"{c}_q25"] = (c, _q(.25))
         named[f"{c}_q75"] = (c, _q(.75))
@@ -187,11 +192,23 @@ def aggregate_edit(df):
     one = df.sort_values("knn_k").groupby(["task", "algo"], as_index=False).first()
     keys = ["part", "sweep", "base", "mode", "break_type", "direction", "x", "series", "algo", "variant"]
     g = one.groupby(keys, dropna=False)
-    named = {"n_samples": ("sample", "nunique"),
+
+    # SURVIVORSHIP. `n_samples` counts every seed, but median()/mean() silently skip the NaN that timed-out,
+    # killed and skipped rows carry. Worse, the dropped instances are the HARD ones: an algorithm that only
+    # finishes on the easy draws gets a flattering median indistinguishable from one that finished on all of
+    # them. This paper's whole claim is "which algorithms work in practice", so the denominator has to be
+    # visible. n_ok is the count actually behind each statistic; the three rates say where the rest went.
+    named = {"n_samples": ("sample", "nunique"),               # every seed attempted
+             "n_ok": ("status", lambda s: (s == "ok").sum()),  # runs that COMPLETED
+             "n_usable": ("usable", "sum"),                    # completed AND the cover verifies == the
+             #                                                   sample size actually behind every *_med below
+             "timeout_rate": ("status", lambda s: (s == "timeout").mean()),
+             "skip_rate": ("status", lambda s: s.astype(str).str.startswith("skipped").mean()),
+             "error_rate": ("status", lambda s: s.astype(str).str.startswith(("error", "oom", "killed")).mean()),
              "H_med": ("H", "median"), "n_corrupted_med": ("n_corrupted", "median"),
              "valid_rate": ("valid", "mean"), "ref_kind": ("ref_kind", lambda s: s.mode().iat[0]
                                                             if len(s.mode()) else None)}
-    named.update(_dist_aggs(DIST_EDIT))
+    named.update(_dist_aggs(DIST_EDIT, one.columns))
     return g.agg(**named).reset_index().sort_values(keys).reset_index(drop=True)
 
 
@@ -202,8 +219,12 @@ def aggregate_knn(df):
     if k.empty:
         return pd.DataFrame(columns=keys + ["n_samples"] + [f"{c}_med" for c in DIST_KNN])
     g = k.groupby(keys, dropna=False)
-    named = {"n_samples": ("sample", "nunique")}
-    named.update(_dist_aggs(DIST_KNN))
+    named = {"n_samples": ("sample", "nunique"),
+             "n_ok": ("status", lambda s: (s == "ok").sum()),
+             "n_usable": ("usable", "sum"),          # a kNN lift computed from an invalid cover is meaningless
+             "timeout_rate": ("status", lambda s: (s == "timeout").mean()),
+             "skip_rate": ("status", lambda s: s.astype(str).str.startswith("skipped").mean())}
+    named.update(_dist_aggs(DIST_KNN, k.columns))
     return g.agg(**named).reset_index().sort_values(keys).reset_index(drop=True)
 
 
@@ -235,20 +256,25 @@ def main():
     # This analyzer previously neither filtered NOR reported invalid covers, and has no timeout_rate column,
     # so a run whose covers silently stopped verifying looked identical to a clean one. An invalid cover is
     # an insufficient cover -> |S| understated -> size_med / ratio_domr_med biased in the algorithm's favour.
-    if "status" in df:
-        n_to = int((df["status"] == "timeout").sum())
-        n_sk = int(df["status"].astype(str).str.startswith("skipped").sum())
-        if n_to or n_sk:
-            print(f"\nnote: {n_to} timed-out and {n_sk} skipped rows -- these carry size=NaN and are silently "
-                  f"dropped by median(); the per-group n_samples still counts them (AUDIT_REPORT.md A7).")
     inval = df["valid"] == 0
     if inval.any():
-        print(f"\nDROPPING {int(inval.sum())} invalid-cover rows from the aggregate:")
+        print(f"\nBLANKING {int(inval.sum())} invalid-cover rows (kept as denominators, see n_usable):")
         print(df[inval].groupby(["sweep", "algo"]).size().to_string())
-    df_ok = df[~inval]
+        # l1_separation is the ONLY algorithm whose sole failure mode is silent non-convergence: on
+        # convergence w' is metric, so support(x) is a valid cover by construction. valid==0 therefore means
+        # it exited at max_rounds=200 without saying so (AUDIT_REPORT.md A4). Name it, don't bury it.
+        n_l1 = int(inval[df["algo"].astype(str).str.startswith("l1sep")].sum())
+        if n_l1:
+            print(f"  ...of which {n_l1} are l1sep = max_rounds non-convergence, NOT an oracle bug.")
 
-    edit = aggregate_edit(df_ok)
-    knn = aggregate_knn(df_ok)
+    # Blank the NUMBERS but KEEP the rows. Dropping them would shrink the denominator and hide the failure:
+    # an algorithm that only succeeds on easy draws would show a flattering median over a silently smaller n.
+    df["usable"] = (df["status"] == "ok") & (df["valid"] != 0)
+    metric_cols = [c for c in dict.fromkeys(DIST_EDIT + DIST_KNN) if c in df.columns]
+    df.loc[inval, metric_cols] = np.nan
+
+    edit = aggregate_edit(df)
+    knn = aggregate_knn(df)
 
     rows_path = os.path.join(a.outdir, "rgg_rows_with_ratio.csv")   # rgg_ prefix: geometric writes rows_with_ratio.csv
     edit_path = os.path.join(a.outdir, "summary_edit.csv")

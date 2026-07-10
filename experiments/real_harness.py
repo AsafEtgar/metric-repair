@@ -48,6 +48,14 @@ N_SEEDS = 30                                                # randomized algos a
 # 2.5h SLURM walltime with NO csv written -- the cause of the truncated heur run (only ~286/589 csvs landed).
 # Cap each heuristic tighter, and add a per-task budget net so the csv is ALWAYS written within walltime.
 REAL_HEUR_TIMEOUT_S = 600                                   # per-(algo, component) wall cap for non-ILP heuristics
+
+# Per-algorithm overrides. Measured after the A1 fix: l1_separation now converges properly instead of
+# stopping early on a blind oracle, and costs 522s / 696s / 1041s on bct_coactivation_lin / flycns_male_log /
+# bct_coactivation_log -- and tol=1e-9 generates more cuts, so it is slower still. At the 600s cap it would
+# be recorded as `timeout` with no cover on exactly the big-H graphs the paper needs it for. Worst-case det
+# task is now 9*600 + 2*1800 = 9000s = 2.5h, still inside REAL_TASK_BUDGET_S and the 4h walltime.
+REAL_ALGO_TIMEOUT = {"l1sep_gmr": 1800, "l1sep_iomr": 1800}
+
 REAL_TASK_BUDGET_S = 3 * 3600                               # once a task's summed algo wall exceeds this, the
                                                             # remaining algos are marked skipped_time (csv still lands)
 
@@ -227,7 +235,7 @@ def run_real(graph, mode, seed, outdir, covers_dir):
         elif not nonmetric:                                    # already metric -> empty cover (control case)
             base.update(status="ok", size=0, valid=1, cpu=0.0, wall=0.0, peak_mb=0.0)
         else:
-            to = ILP_TIMEOUT_S if name in ILP_ALGOS else REAL_HEUR_TIMEOUT_S
+            to = ILP_TIMEOUT_S if name in ILP_ALGOS else REAL_ALGO_TIMEOUT.get(name, REAL_HEUR_TIMEOUT_S)
             # `to` is charged PER NON-METRIC COMPONENT, not per algorithm. One algorithm on a graph with k
             # such components can therefore burn k*to of wall before the budget above is ever re-checked
             # (it is only tested BETWEEN algorithms). Safe today because every processed graph has exactly one

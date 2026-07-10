@@ -46,15 +46,21 @@ def check(df):
     print("\nstatus counts:")
     print(df["status"].value_counts().to_string())
     bad = df[df["status"].str.startswith(("timeout", "oom", "killed", "error"), na=False)]
-    # The two exact ILPs are capped at 45s and EXPECTED to time out at large n -- that just triggers the LP
-    # lower-bound fallback for the reference, so it's not a failure. Everything else (oom/killed/error, or a
-    # timeout in any other algo) is a genuine hard problem.
-    is_ilp_to = bad["status"].str.startswith("timeout", na=False) & bad["algo"].isin(["iomr_ilp", "gmr_ilp"])
-    expected, hard = bad[is_ilp_to], bad[~is_ilp_to]
-    print(f"\nexpected ILP timeouts (iomr_ilp/gmr_ilp -> LP-bound fallback, benign): {len(expected)}")
-    if len(expected):
-        print(expected.groupby("algo").size().to_string())
-    print(f"\nHARD-fail rows (oom/killed/error, or timeout in any other algo): {len(hard)}")
+    # A TIMEOUT is a CONTROLLED CAP, not a crash -- for every algorithm, not just the ILPs. The two exact
+    # ILPs are capped at 45s and fall back to the LP bound; the heuristics are capped at TIMEOUT_S and that
+    # cell simply has no cover. Counting heuristic timeouts as hard failures made rgg_large report
+    # "PROBLEMS: 900" for what is really a coverage limit at n<=3000, drowning the signal. Only
+    # oom/killed/error are genuine failures. Timeouts are reported per-algorithm because, under the question
+    # "which algorithms work in practice", a high timeout rate IS the finding -- it just isn't a bug.
+    is_to = bad["status"].str.startswith("timeout", na=False)
+    timeouts, hard = bad[is_to], bad[~is_to]
+    ilp_to = timeouts[timeouts["algo"].isin(["iomr_ilp", "gmr_ilp"])]
+    heur_to = timeouts[~timeouts["algo"].isin(["iomr_ilp", "gmr_ilp"])]
+    print(f"\nbenign timeouts: {len(ilp_to)} ILP (-> LP-bound fallback) "
+          f"+ {len(heur_to)} heuristic (hit the per-algo cap -> that algo x task cell has no cover)")
+    if len(heur_to):
+        print(heur_to.groupby("algo").size().rename("timed_out").to_string())
+    print(f"\nHARD failures (oom/killed/error only): {len(hard)}")
     if len(hard):
         print(hard.groupby(["algo", "status"]).size().to_string())
         problems += len(hard)

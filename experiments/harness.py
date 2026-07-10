@@ -47,6 +47,20 @@ TIMEOUT_S = 30 * 60          # per (algorithm, instance) wall-clock cap
 ALGO_TIMEOUT = {"iomr_ilp": 45, "gmr_ilp": 45}
 TASK_BUDGET_S = 120 * 60     # per-task (all algorithms on one graph) budget; later algos -> skipped_time
                              # so a slow graph can't blow the SLURM per-task limit and lose the whole CSV.
+
+# The budget is spent SEQUENTIALLY, so whichever algorithms run last get starved. At n>=1000 a 2h budget was
+# exhausted by the covering-LP family before `pivot`, `spc_*` and `left_edge` ever ran: geometric-large
+# recorded 3488 `skipped_time` rows, and `pivot` was measured on 112 of 720 tasks. `skipped_time` means WE DID
+# NOT MEASURE IT -- which is a very different claim from "the algorithm failed", and this paper's thesis is
+# exactly which algorithms work in practice. Give the large grids room for every algorithm to take its shot.
+# Keep budget < SLURM walltime or the CSV is lost outright: submit_*.sh requests 8h for these.
+TASK_BUDGET = {"small": TASK_BUDGET_S, "full": TASK_BUDGET_S, "poc": TASK_BUDGET_S,
+               "mixed": TASK_BUDGET_S,
+               "large": 6 * 3600, "largemix": 6 * 3600, "realrec": 6 * 3600}
+
+
+def task_budget(grid):
+    return TASK_BUDGET.get(grid, TASK_BUDGET_S)
 REGION_H_MAX = 200           # region growing only when total broken-edge count |H| is small (it's O(V*E)/pair)
 BEST_OF_K = 12
 WEIGHT_P = 0.5               # fixed weight parameter for the decoupled model (Geometric(1-0.5))
@@ -178,7 +192,15 @@ def _cov(CC, rounding, iomr, oracle, seed=None, best_of_k=1):
 
 def build_suite(seed):
     """(name, variant, verify_key, n_max, region_gated, fn(CC)).  n_max gates on the GIANT component size;
-    region_gated gates on total |H| <= REGION_H_MAX.  verify_key: gmr/iomr/none(=lower bound)."""
+    region_gated gates on total |H| <= REGION_H_MAX.  verify_key: gmr/iomr/none(=lower bound).
+
+    !! DO NOT REORDER THIS LIST !!  `pivot`/`MVD_Pivot` draws its pivots from the GLOBAL numpy RNG and takes
+    no seed parameter (AUDIT_REPORT.md B6). It is reproducible today only because seed_all(seed) seeds the
+    global RNG, graph generation consumes a fixed number of draws, and every algorithm that runs before pivot
+    uses its own local Generator. Reordering the suite -- e.g. to stop the covering-LP family starving pivot
+    of the task budget -- would silently change every pivot cover ever computed, with no error. The task
+    budget was raised instead (TASK_BUDGET). Fix B6 before touching this order.
+    """
     return [
         ("domr",           "DOMR", "gmr",  None, False, lambda CC: (domr_alg(CC), {})),
         ("gmr_lp_rsp",     "GMR",  "gmr",  None, False, lambda CC: _lp(CC, False, "rsp")),
@@ -201,8 +223,11 @@ def build_suite(seed):
          lambda CC: _cov(CC, "deterministic", True, "naive", seed=seed, best_of_k=BEST_OF_K)),
         ("iomr_rand",      "IOMR", "iomr", None, False, lambda CC: _cov(CC, "randomized", True, "naive", seed=seed)),
         ("iomr_regiongrow", "IOMR", "iomr", None, True, lambda CC: _cov(CC, "region_growing", True, "naive")),
-        ("l1sep_gmr",      "GMR",  "gmr",  None, False, lambda CC: (l1_separation(CC, general=True), {})),
-        ("l1sep_iomr",     "IOMR", "iomr", None, False, lambda CC: (l1_separation(CC, general=False), {})),
+        # return_info=True: l1_separation exits silently at max_rounds with a possibly-invalid cover. Record
+        # `converged` and `rounds` so non-convergence is visible in the CSV instead of only inferable from
+        # valid==0 after the fact. See AUDIT_REPORT.md A4.
+        ("l1sep_gmr",      "GMR",  "gmr",  None, False, lambda CC: l1_separation(CC, general=True, return_info=True)),
+        ("l1sep_iomr",     "IOMR", "iomr", None, False, lambda CC: l1_separation(CC, general=False, return_info=True)),
         ("spc_gmr",        "GMR",  "gmr",  None, False, lambda CC: (shortest_path_cover(CC, general=True), {})),
         ("spc_iomr",       "IOMR", "iomr", None, False, lambda CC: (shortest_path_cover(CC, general=False), {})),
         ("pivot",          "GMR",  "gmr",  None, False, lambda CC: (pivot_heuristic(CC), {})),
@@ -381,9 +406,10 @@ def run_one_task(task_index, outdir, grid="full"):
         suite = [e for e in suite if e[0] not in DROP_LARGE]
     rows = []
     elapsed = 0.0
+    budget = task_budget(grid)                    # per-grid: the large grids need room for every algorithm
     for (name, variant, vkey, n_max, region_gated, fn) in suite:
         row = {**meta, "algo": name, "variant": variant, **{k: None for k in RUN_FIELDS}}
-        if elapsed >= TASK_BUDGET_S:               # ran out of per-task budget -> skip the rest
+        if elapsed >= budget:                     # ran out of per-task budget -> skip the rest
             row["status"] = "skipped_time"
         elif n_max is not None and giant > n_max:
             row["status"] = "skipped_n"

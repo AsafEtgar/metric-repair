@@ -586,7 +586,7 @@ def _l1_separation_phi(rows, m):
 
 
 def l1_separation(G, general=False, complete_graph=False, solver="highs-ipm", reweight=0,
-                  max_rounds=200, tol=1e-9, min_weight=1.0, verbose=False):
+                  max_rounds=200, tol=1e-9, min_weight=1.0, verbose=False, return_info=False):
     # `tol` is used in exactly ONE place: the metric-break test `dist < w' - tol`. It must therefore match
     # verifier()'s tol (1e-9). At the old 1e-6 this oracle was blind to every break with a gap in
     # [1e-9, 1e-6) -- not on the initial graph, where gaps are large, but on the REWEIGHTED graph w' = w + x
@@ -619,6 +619,7 @@ def l1_separation(G, general=False, complete_graph=False, solver="highs-ipm", re
     n = len(verts)
     G_edges = set(sorted_edges(G))
     rows, seen = [], set()
+    converged, r = False, -1              # r=-1 guards max_rounds=0; converged is the whole point of A4
     x = np.zeros(m)
     for r in range(max_rounds):
         wprime = w + x
@@ -646,6 +647,7 @@ def l1_separation(G, general=False, complete_graph=False, solver="highs-ipm", re
                 seen.add(key)
                 new_rows.append((D[(u, v)], lcols))
         if not new_rows:                                     # w' metric -> optimal, done
+            converged = True
             break
         rows.extend(new_rows)
         phi = _l1_separation_phi(rows, m)
@@ -674,7 +676,16 @@ def l1_separation(G, general=False, complete_graph=False, solver="highs-ipm", re
         if verbose:
             print(f"[l1-sep] round {r}: {len(rows)} polygon rows, "
                   f"|support|={int((np.abs(x) > 1e-7).sum())}")
-    return {e for e in sorted_edges(H) if e in G_edges and abs(x[D[e]]) > 1e-7}
+
+    cover = {e for e in sorted_edges(H) if e in G_edges and abs(x[D[e]]) > 1e-7}
+    if not return_info:
+        return cover                                          # legacy: a bare set (run_experiments.py)
+    # A4: this was the ONLY repair entry point that returned a bare set with no signal. On convergence w' is
+    # metric, so `cover` = support(x) is a valid cover BY CONSTRUCTION. Exiting via max_rounds therefore
+    # means the returned cover may not repair the graph at all -- and it was reported as status="ok".
+    # Measured on the geometric grid: the invalid rate among COMPLETED runs climbs monotonically to 100%
+    # at n=290. Surface it; the caller decides.
+    return cover, {"rounds": r + 1, "cuts": len(rows), "converged": converged}
 
 
 def broken_cycle_rounding_heuristic(G, max_len=None, rounds=20, scale=None, seed=None, iomr=False):

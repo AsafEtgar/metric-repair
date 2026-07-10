@@ -14,7 +14,9 @@ NETID="${2:-CHANGE_ME}"            # PI's netid, for -A pi_<netid>
 GRID="${3:-small}"
 if [ "$GRID" = "small" ]; then DEFMEM=4g; elif [ "$GRID" = "large" ]; then DEFMEM=16g; else DEFMEM=8g; fi
 MEM="${4:-$DEFMEM}"
-if [ "$GRID" = "large" ]; then TIME=04:00:00; else TIME=02:30:00; fi   # large: n up to 3000 -> 4h/task
+# 8h: harness.TASK_BUDGET gives `large` a 6h per-task budget so pivot/spc/left_edge are actually measured
+# instead of starved by the covering-LP family running before them. Budget must stay inside the walltime.
+if [ "$GRID" = "large" ]; then TIME=08:00:00; else TIME=02:30:00; fi
 MAXJOBS=64
 
 if [ "$GRID" = "full" ]; then
