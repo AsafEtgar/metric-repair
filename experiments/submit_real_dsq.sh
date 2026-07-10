@@ -17,9 +17,12 @@ NETID="${2:-CHANGE_ME}"
 ARRAY="${3:-heur}"
 MEM="${4:-8g}"
 MAXJOBS=64
-# ilp: 17h cap + slack.  heur: worst det task = 11 heuristics x REAL_HEUR_TIMEOUT_S(600s) = ~110min on the
-# big-H graphs (ripe/flycns/bct); 4h gives margin over that + the REAL_TASK_BUDGET_S(3h) safety net.
-if [ "$ARRAY" = "ilp" ]; then TIME=17:30:00; else TIME=04:00:00; fi
+# ilp: 17h cap + slack.
+# heur: per-algorithm caps (real_harness.REAL_ALGO_TIMEOUT) give the three expensive algorithms room, so a
+# `timeout` means intractable rather than impatient. Worst case det = 9*600 + 2*3600 = 3.5h, rand = 5*1800 =
+# 2.5h; REAL_TASK_BUDGET_S(4h) is the net and must stay INSIDE this walltime -- a budget-stopped task still
+# writes its CSV, a SLURM-killed one does not.
+if [ "$ARRAY" = "ilp" ]; then TIME=17:30:00; else TIME=06:00:00; fi
 
 OUTDIR=results_real
 COVERS=results_real_covers

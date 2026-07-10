@@ -49,14 +49,29 @@ N_SEEDS = 30                                                # randomized algos a
 # Cap each heuristic tighter, and add a per-task budget net so the csv is ALWAYS written within walltime.
 REAL_HEUR_TIMEOUT_S = 600                                   # per-(algo, component) wall cap for non-ILP heuristics
 
-# Per-algorithm overrides. Measured after the A1 fix: l1_separation now converges properly instead of
-# stopping early on a blind oracle, and costs 522s / 696s / 1041s on bct_coactivation_lin / flycns_male_log /
-# bct_coactivation_log -- and tol=1e-9 generates more cuts, so it is slower still. At the 600s cap it would
-# be recorded as `timeout` with no cover on exactly the big-H graphs the paper needs it for. Worst-case det
-# task is now 9*600 + 2*1800 = 9000s = 2.5h, still inside REAL_TASK_BUDGET_S and the 4h walltime.
-REAL_ALGO_TIMEOUT = {"l1sep_gmr": 1800, "l1sep_iomr": 1800}
+# PER-ALGORITHM CAPS. At a flat 600s the three expensive algorithms all read `timeout`, which is a statement
+# about the cap, not about them. The paper's claim is which algorithms work in practice, so each gets enough
+# room that a timeout means "intractable", not "we were impatient". The measured 600s timeouts had three
+# distinct causes, so the caps are set per cause:
+#
+#   l1sep_*        |H|-bound. Post-A1 it converges properly instead of stopping early on a blind oracle:
+#                  522s @ |H|=210, 696s @ 1761, 1041s @ 3273 (and tol=1e-9 adds cuts). It timed out on the
+#                  four graphs with |H| >= 3376. 3600s should capture ~|H| <= 10k.
+#   *_bestofk      m-bound (k independent roundings of the covering LP): 208 of the 276 timeout rows. Dies
+#                  above ~14k edges.
+#   pivot          n-bound -- it COMPLETES the graph first, so cost follows n^2 edges regardless of |H|.
+#                  Timed out on all 30 seeds of dimacs_ny_t (n=5000) whose |H| is only ~18.
+#
+# Worst case: det = 9*600 + 2*3600 = 12600s (3.5h); rand = 5*1800 = 9000s (2.5h). Both inside the 4h budget
+# below, which is inside the 6h walltime that submit_real_dsq.sh now requests. The budget must stay under the
+# walltime: a task the budget stops still writes its CSV, one SLURM kills does not.
+REAL_ALGO_TIMEOUT = {
+    "l1sep_gmr": 3600, "l1sep_iomr": 3600,
+    "gmr_bestofk": 1800, "iomr_bestofk": 1800,
+    "pivot": 1800, "gmr_rand": 1800, "iomr_rand": 1800,
+}
 
-REAL_TASK_BUDGET_S = 3 * 3600                               # once a task's summed algo wall exceeds this, the
+REAL_TASK_BUDGET_S = 4 * 3600                               # once a task's summed algo wall exceeds this, the
                                                             # remaining algos are marked skipped_time (csv still lands)
 
 BASE_GRAPHS = ["dimacs_ny_d", "dimacs_ny_t", "ripe_atlas", "nmr_1d3z_atom", "nmr_1d3z_residue",
