@@ -93,9 +93,18 @@ def note(ax, text, loc="upper left"):
 
 
 def save(fig, outdir, name, legend=None):
-    """Write PDF + PNG, keeping an outside legend inside the tight bounding box."""
+    """Write PDF + PNG, keeping BOTH the suptitle and an outside legend inside the tight bounding box.
+
+    bbox_inches="tight" already collects the figure's DEFAULT artists -- the axes, the suptitle, and any
+    figure-level legend (fig.legend). The old code passed an explicit `bbox_extra_artists=[legend]`, and an
+    explicit list REPLACES that default set rather than augmenting it, so the suptitle was silently clipped
+    out of every multi-panel figure (plots.py fig1/2/4, rgg_plots.py). Augment the default set instead: a
+    passed-in legend is captured WITHOUT dropping the suptitle, and callers that already attached their legend
+    to the figure need not pass it at all."""
     os.makedirs(outdir, exist_ok=True)
-    extra = [legend] if legend is not None else None
+    extra = list(fig.get_default_bbox_extra_artists())
+    if legend is not None and legend not in extra:
+        extra.append(legend)
     for ext in ("pdf", "png"):
         fig.savefig(os.path.join(outdir, f"{name}.{ext}"), bbox_inches="tight",
                     bbox_extra_artists=extra, dpi=150)

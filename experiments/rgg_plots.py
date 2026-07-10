@@ -68,6 +68,18 @@ def _grid(n, ncols=3):
     return int(np.ceil(n / ncols)), ncols
 
 
+def _finish(fig, outdir, name):
+    """Lay out, attach the shared legend, and save. The legend is deliberately NOT passed to save():
+    plot_common.save() forwards an explicit bbox_extra_artists list to savefig(bbox_inches="tight"), and an
+    explicit list REPLACES matplotlib's default artist set -- the set that carries the figure suptitle. So a
+    passed-in legend silently clips the suptitle off every PNG/PDF (each figure lost its "Part 1 -- ... --
+    GMR/IOMR" title). Attaching the legend to the figure here and letting save()'s default tight bbox collect
+    BOTH keeps title + legend. Same convention as plots.py (see its fig1 note)."""
+    fig.tight_layout(rect=[0, 0, 1, 0.97])
+    figure_legend(fig)
+    save(fig, outdir, name)
+
+
 def _lines(ax, sub, ycol, sty):
     """One median line per algorithm. Any secondary series (S6's frac_q) is collapsed by the median per x, so
     every panel is one clean line per algorithm -- and the shared legend stays ~10 entries instead of ~30."""
@@ -104,8 +116,7 @@ def fig_part1(edit, sty, outdir, metric, name, title, better, ylim=None, hline=N
     for j in range(len(sweeps), nrows * ncols):
         axes[j // ncols][j % ncols].axis("off")
     fig.suptitle(title, fontsize=12)
-    fig.tight_layout(rect=[0, 0, 1, 0.97])
-    save(fig, outdir, name, figure_legend(fig))
+    _finish(fig, outdir, name)
 
 
 def fig_knn_grid(knn, sty, outdir, ycol, name, title, better, baseline=None, hline=None):
@@ -132,8 +143,7 @@ def fig_knn_grid(knn, sty, outdir, ycol, name, title, better, baseline=None, hli
             if j == 0:
                 ax.set_ylabel(ylab(ycol.replace("_", " "), better))
     fig.suptitle(title, fontsize=12)
-    fig.tight_layout(rect=[0, 0, 1, 0.97])
-    save(fig, outdir, name, figure_legend(fig))
+    _finish(fig, outdir, name)
 
 
 def fig_triplet(knn, sty, outdir):
@@ -160,8 +170,7 @@ def fig_triplet(knn, sty, outdir):
     for j in range(len(sweeps), nrows * ncols):
         axes[j // ncols][j % ncols].axis("off")
     fig.suptitle("Part 2 -- triplet-ordering accuracy: repaired (F) vs corrupted (C)", fontsize=12)
-    fig.tight_layout(rect=[0, 0, 1, 0.97])
-    save(fig, outdir, "fig_triplet", figure_legend(fig))
+    _finish(fig, outdir, "fig_triplet")
 
 
 def make_family(edit, knn, sty, fam, outdir):
@@ -212,8 +221,18 @@ def main():
     # one panel would median a road network together with a scRNA cosine-kNN graph. Facet by base instead --
     # rgg_analyze.attach_base() puts the column there precisely so this is possible.
     bases = sorted(edit["base"].dropna().unique()) if "base" in edit else []
-    facets = [(b, edit[edit["base"] == b], knn[knn["base"] == b]) for b in bases] if bases else \
-             [(None, edit, knn)]
+    # The OFAT sweeps (S1, S1d, P2*, ...) carry base=NaN and belong at the top level; the realrec sweeps
+    # carry a base and are faceted into per-base subfolders. These are ADDITIVE, not either/or: the old
+    # `[...] if bases else [(None, ...)]` dropped EVERY base-less sweep the moment a single RR_* row was
+    # present in the same summary (e.g. a hand-merged edit CSV), silently losing S1/S1d/P2* -- exactly the
+    # survivorship the rest of this pipeline is built to avoid. Emit the top-level set whenever any base-less
+    # row exists (or when there are no bases at all), then a set per base.
+    base_e = edit[edit["base"].isna()] if "base" in edit else edit
+    base_k = knn[knn["base"].isna()] if "base" in knn else knn
+    facets = []
+    if not bases or not base_e.empty or not base_k.empty:
+        facets.append((None, base_e, base_k))
+    facets += [(b, edit[edit["base"] == b], knn[knn["base"] == b]) for b in bases]
     if bases:
         print(f"faceting by base graph: {bases}")
 

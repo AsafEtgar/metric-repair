@@ -85,7 +85,7 @@ def fig_spearman_delta(df, outdir):
     if not rows:
         print("    skip fig_spearman_delta (no rows)"); return
     piv = pd.DataFrame(rows, columns=["graph", "variant", "delta"]).pivot(
-        index="graph", columns="variant", values="delta").reindex(columns=VARIANT_ORDER)
+        index="graph", columns="variant", values="delta").reindex(index=graphs, columns=VARIANT_ORDER)
     fig, ax = plt.subplots(figsize=(1.6 * len(graphs) + 2, 3.4))
     x = np.arange(len(piv)); w = 0.25
     for i, v in enumerate([v for v in VARIANT_ORDER if v in piv.columns]):

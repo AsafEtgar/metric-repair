@@ -130,7 +130,11 @@ def fig1_ratio_vs_n(df, sty, fam, outdir):
     sub = " — red band: ILP OPT timed out, ratio is vs the LP lower bound (over-estimate)" if any_tail else ""
     fig.suptitle(f"Exp 1 — approximation ratio vs n — {FAM_TITLE[fam]}{sub}", fontsize=11)
     fig.tight_layout(rect=[0, 0, 1, 0.97])
-    save(fig, outdir, "fig1_ratio_vs_n", figure_legend(fig))
+    # figure_legend() attaches the legend to the figure; do NOT hand it to save(). Passing an explicit
+    # bbox_extra_artists list there REPLACES matplotlib's default set (which includes the suptitle), so the
+    # suptitle would be clipped off. With legend left off, save()'s tight bbox keeps BOTH legend + suptitle.
+    figure_legend(fig)
+    save(fig, outdir, "fig1_ratio_vs_n")
 
 
 def fig2_runtime_vs_n(df, sty, fam, outdir):
@@ -150,7 +154,8 @@ def fig2_runtime_vs_n(df, sty, fam, outdir):
         ax.set_ylabel(ylab("CPU seconds", "down"))
     fig.suptitle(f"Exp 1 — CPU time vs n (log-log) — {FAM_TITLE[fam]}", fontsize=11)
     fig.tight_layout(rect=[0, 0, 1, 0.97])
-    save(fig, outdir, "fig2_runtime_vs_n", figure_legend(fig))
+    figure_legend(fig)                          # attach legend but keep it off save() -- see fig1 note
+    save(fig, outdir, "fig2_runtime_vs_n")      # (explicit bbox_extra_artists would drop the suptitle)
 
 
 def fig3_onset_vs_p(df, sty, fam, outdir):
@@ -200,7 +205,8 @@ def fig4_ratio_vs_p(df, sty, fam, outdir):
     sub = " — red band: ratio is vs the LP lower bound (ILP timed out)" if any_tail else ""
     fig.suptitle(f"Exp 2 — approximation ratio vs edge density p — {FAM_TITLE[fam]}{sub}", fontsize=11)
     fig.tight_layout(rect=[0, 0, 1, 0.97])
-    save(fig, outdir, "fig4_ratio_vs_p", figure_legend(fig))
+    figure_legend(fig)                          # attach legend but keep it off save() -- see fig1 note
+    save(fig, outdir, "fig4_ratio_vs_p")        # (explicit bbox_extra_artists would drop the suptitle)
 
 
 def main():
