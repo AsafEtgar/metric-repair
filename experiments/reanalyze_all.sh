@@ -104,9 +104,22 @@ for g in rgg rgg_large rgg_mixed rgg_largemix rgg_realrec; do
 done
 $PY experiments/real_plots.py --summary analysis/summary_real.csv    --outdir analysis/figs/real
 
+# ---------------------------------------------------------------- pure real-data downstream (ripe/nmr)
+# Separate experiment (downstream_recovery.py), so it is guarded on its own output existing rather than in
+# the preflight. Analyze + plot here so the one big pass produces its figures too, and bundle_analysis then
+# carries analysis/summary_downstream.csv and analysis/figs/downstream/* to the Mac like everything else.
+if ls results_downstream/*.csv >/dev/null 2>&1; then
+    banner "analyze + figures -- pure real-data downstream"
+    $PY experiments/downstream_analyze.py --indir results_downstream --outdir analysis | tee analysis/analyze_downstream.out
+    $PY experiments/downstream_plots.py   --summary analysis/summary_downstream.csv --outdir analysis/figs/downstream
+else
+    echo; echo "note: results_downstream/ empty or absent -- skipping the pure real-data downstream figures."
+fi
+
 banner "done"
 echo "Check these before trusting anything:"
 echo "  * every collect.py call succeeded (it aborts on stale/orphan/ragged input)"
 echo "  * real_check.py: HARD failures == 0, metric control dimacs_ny_d == 0 rows with size>0"
 echo "  * real_check.py: invalid covers should now be 0 -- the A1 fix repaired bct_*/flycns_male_log"
 echo "  * analyze/rgg_analyze: any 'DROPPING N invalid-cover rows' line is l1_separation non-convergence"
+echo "  * downstream_analyze: DOMR self-check must read 'max |lift| = 0.00e+00'"
