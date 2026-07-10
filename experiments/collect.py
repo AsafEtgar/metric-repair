@@ -92,15 +92,41 @@ def main():
                  "  Mixing harnesses or code versions. The old code would have silently blank-padded or crashed.")
 
     header = list(distinct.pop())
+
+    # --- suite check: every task must have run the SAME set of algorithms -------------------------------
+    # Matching columns are not enough. dSQ reads the working copy when each task LAUNCHES, so editing the
+    # suite mid-array silently splits the campaign: results_small has 1068 task CSVs with 18 algorithms and
+    # 1392 with 21 (the three GMR covering analogues were added partway through), all on the same date, same
+    # header. The affected algorithms' medians then rest on a non-randomly chosen subset -- whichever tasks
+    # happened to run after the edit. Row sets, not column sets, are the thing to compare.
     n_rows = 0
+    suites, rows_by_file = {}, {}
+    for fp in files:
+        with open(fp, newline="") as f:
+            rows = list(csv.DictReader(f))
+        rows_by_file[fp] = rows
+        if rows and "algo" in rows[0]:
+            suites[fp] = frozenset(r["algo"] for r in rows)
+    if len(set(suites.values())) > 1:
+        from collections import Counter
+        counts = Counter(suites.values())
+        biggest = max(counts, key=len)
+        print(f"  !! {len(counts)} different algorithm suites across {len(files)} task CSVs:")
+        for s, n in counts.most_common():
+            miss = sorted(biggest - s)
+            print(f"       {n:5d} files with {len(s):2d} algos" + (f"  missing: {miss}" if miss else "  (full)"))
+        if not a.allow_stale:
+            sys.exit("ABORTING: the suite changed mid-campaign, so these tasks are not comparable.\n"
+                     "  Re-run the grid, or pass --allow-stale to concatenate anyway.")
+        print("  (--allow-stale: concatenating a mixed-suite campaign)")
+
     with open(a.out, "w", newline="") as out:
         writer = csv.DictWriter(out, fieldnames=header)
         writer.writeheader()
         for fp in files:
-            with open(fp, newline="") as f:
-                for row in csv.DictReader(f):
-                    writer.writerow(row)
-                    n_rows += 1
+            for row in rows_by_file[fp]:
+                writer.writerow(row)
+                n_rows += 1
     print(f"{len(files)} files, {n_rows} rows -> {a.out}")
 
 
