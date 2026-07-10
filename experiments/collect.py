@@ -83,11 +83,20 @@ def main():
                      "  Inspect them, delete or quarantine them, then re-run. --allow-stale to skip anyway.")
         print("  (--allow-stale: the files above were EXCLUDED from the output)")
 
-    # --- schema check: every file must agree on the header --------------------------------------------
-    headers = {}
+    # --- one pass: header AND algorithm set per file ---------------------------------------------------
+    # Read each file once and keep only what the two checks below need: its fieldnames, and the set of
+    # algorithms it ran. An earlier version of this function materialised every row of every file before
+    # writing -- 175,218 row dicts for results_rgg -- which made collect the slowest and hungriest step in
+    # the pipeline. Memory here is O(#files), not O(#rows); the concatenation streams.
+    headers, suites = {}, {}
     for fp in files:
         with open(fp, newline="") as f:
-            headers[fp] = tuple(csv.DictReader(f).fieldnames or ())
+            r = csv.DictReader(f)
+            headers[fp] = tuple(r.fieldnames or ())
+            if r.fieldnames and "algo" in r.fieldnames:
+                suites[fp] = frozenset(row["algo"] for row in r)
+
+    # --- schema check: every file must agree on the header ---------------------------------------------
     distinct = set(headers.values())
     if len(distinct) > 1:
         ref = headers[files[0]]
@@ -103,14 +112,6 @@ def main():
     # 1392 with 21 (the three GMR covering analogues were added partway through), all on the same date, same
     # header. The affected algorithms' medians then rest on a non-randomly chosen subset -- whichever tasks
     # happened to run after the edit. Row sets, not column sets, are the thing to compare.
-    n_rows = 0
-    suites, rows_by_file = {}, {}
-    for fp in files:
-        with open(fp, newline="") as f:
-            rows = list(csv.DictReader(f))
-        rows_by_file[fp] = rows
-        if rows and "algo" in rows[0]:
-            suites[fp] = frozenset(r["algo"] for r in rows)
     if len(set(suites.values())) > 1:
         from collections import Counter
         counts = Counter(suites.values())
@@ -124,13 +125,16 @@ def main():
                      "  Re-run the grid, or pass --allow-stale to concatenate anyway.")
         print("  (--allow-stale: concatenating a mixed-suite campaign)")
 
+    # --- stream the concatenation ----------------------------------------------------------------------
+    n_rows = 0
     with open(a.out, "w", newline="") as out:
         writer = csv.DictWriter(out, fieldnames=header)
         writer.writeheader()
         for fp in files:
-            for row in rows_by_file[fp]:
-                writer.writerow(row)
-                n_rows += 1
+            with open(fp, newline="") as f:
+                for row in csv.DictReader(f):
+                    writer.writerow(row)
+                    n_rows += 1
     print(f"{len(files)} files, {n_rows} rows -> {a.out}")
 
 
