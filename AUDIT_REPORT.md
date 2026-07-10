@@ -271,6 +271,59 @@ mtime-audit `results_rgg/` exactly as we did for `results_real/`.
 
 ---
 
+### A10 — oracle break tolerance `1e-6` vs verifier `1e-9` (was B21) · HIGH · **I misdiagnosed this as latent**
+`metric_repair.py` `_violated_cuts` and `l1_separation` (both now `break_tol = 1e-9`)
+
+Two functions decided "is this edge undercut?" at `1e-6` while `verifier()` decides at `1e-9`. Every break with
+a gap in `[1e-9, 1e-6)` was therefore invisible to the oracle and visible to the verifier: the oracle declares
+convergence, the verifier rejects the cover.
+
+**Why I called it latent, and why that was wrong.** I measured the blind band on the **initial** graphs — every
+real graph had zero breaks in it, so I filed B21 as a hazard with no exposure. But the oracle does not run on
+the initial graph. It runs on the **intermediate** graphs: after cover edges are heavied (`_violated_cuts`), and
+after the LP has pushed weights to within a whisker of metric (`l1_separation`, on `w' = w + x`). *That* is where
+gaps land in the blind band. The right test was the one I never ran.
+
+**Exposure, measured.** Invalid covers on the float-weighted synthetic grids, all produced by the old `1e-6`:
+`rgg full` 40, `rgg large` 187, `rgg mixed` 3, `rgg largemix` 22, `rgg realrec` 52. The affected algorithms are
+exactly the ones whose top-up trusts that oracle — `*_thr_naive`, `*_bestofk`, `*_rand`, `iomr_regiongrow` —
+plus both `l1sep` variants and the ILPs. Integer-weighted geometric grids are immune: gaps there are `>= 1`.
+
+**Verified fixed.** On a triangle with a `5e-7` gap, `_violated_cuts` finds 0 cuts at `1e-6` and 1 at `1e-9`, and
+the entire rounding family goes from `|S|=0, valid=0` to `|S|=1, valid=1`. After the fix, the re-run of
+`results_rgg` reports **`invalid covers: 0` across 175,218 rows** and `PROBLEMS: 0`.
+
+`tol` in `_violated_cuts` was doing two unrelated jobs — the metric-break test and the LP constraint-violation
+slack. They are now separate constants; only the former was tightened.
+
+---
+
+### A11 — `l1_separation` returned negative weights and crashed Floyd–Warshall · MEDIUM · **a regression I introduced**
+`metric_repair.py` (IOMR branch)
+
+`NegativeCycleError('Negative cycle in nodes [51 215]')` on 6 `l1sep_iomr` rows in `realrec`. HiGHS honours
+`bounds=(0, None)` only to its primal feasibility tolerance (~`1e-7`), so `x` came back at `-1e-8`. Harmless on
+ordinary weights, fatal on tiny ones: deflate mints edges as small as `2e-10` (its guard only rejects
+`gap <= 1e-9`), so `w + x` goes negative. **Before the A1 fix those edges were silently deleted, which hid it.**
+Fixing one bug exposed another. Now `x = np.maximum(x, 0)`. The GMR branch was always safe — its bounds floor
+`w + x` at `min(min_weight, w_e) > 0`.
+
+---
+
+### A12 — the algorithm suite changed *mid-array*, splitting a campaign · HIGH
+`results_small/`
+
+1068 task CSVs hold 18 algorithms and 1392 hold 21 — `gmr_thr_naive`, `gmr_bestofk` and `gmr_rand` are absent
+from the first group. All 2460 files carry the **same date and the same header**. dSQ reads the working copy when
+each task *launches*, so editing `build_suite` while the array ran split the campaign in two. `collect.py`'s
+schema check could not see it: the columns matched, only the row sets differed.
+
+Under a paper that ranks algorithms this is not cosmetic — those three methods' geometric medians rested on a
+**non-randomly chosen 57%** of tasks, namely whichever ones happened to run after the edit. `collect.py` now
+compares per-file algorithm sets and aborts. `results_small` is being re-run in full.
+
+---
+
 ## 2. LATENT findings — real bugs, verified zero current exposure
 
 | id | file | finding | why it doesn't bite (verified) |
@@ -295,7 +348,7 @@ mtime-audit `results_rgg/` exactly as we did for `results_real/`.
 | **B18** | `graph_models.py:186-209` | radius/kNN RGG has no connectivity guarantee and silently drops isolated vertices (`n_eff < n`) with no signal | current `deg`/`k` are well above the threshold |
 | **B19** | `graph_models.py:245` | the `integer` flag is all-or-nothing; one float weight flips the whole graph to float mode | our graphs are homogeneous |
 | **B20** | `metric_repair.py:568,573` | `l1_rounding_heuristic`'s fallback `set(support)` is returned unverified though the docstring calls it "always valid" | not invoked by any experiment |
-| **B21** | `metric_repair.py:777` vs `:137` | oracle `tol=1e-6` vs verifier `tol=1e-9`, both **absolute** — a real 1000× mismatch | **zero** blind-band breaks in any real graph, and zero among the A1 residuals. Demonstrable only on a synthetic triangle. See §3 |
+| ~~B21~~ | — | **RECLASSIFIED as ACTIVE — see A10.** I filed it latent on the strength of a test that was simply wrong. | — |
 
 ---
 
@@ -303,13 +356,16 @@ mtime-audit `results_rgg/` exactly as we did for `results_real/`.
 
 These are recorded so they are not re-discovered and acted on.
 
-* **"The invalid covers are caused by the oracle/verifier tolerance mismatch (B21)."**
-  The tolerance mismatch is real (minimal counterexample: triangle `0.001, 0.001, 0.0020005`, gap `5e-7`, ILP
-  returns `∅` with `converged=True`). But it explains **none** of the real-data failures: tightening the oracle to
-  `1e-9` leaves `|S|`, `converged`, `valid`, and every residual gap *bit-identical* on all three graphs; the
-  residual gaps are `1e-3 … 3.95`, up to 88,000× the tolerance; and no real graph has a single break in the blind
-  band. The agent generalized from synthetic weight-scale-`1e-6` graphs where B21 dominates. **The true cause is
-  A1.** Had this been "fixed" as diagnosed, the bug would have survived and we would have declared it closed.
+* **"The *real-data* invalid covers are caused by the oracle/verifier tolerance mismatch."**
+  Refuted **for the real data only**. Tightening the oracle to `1e-9` leaves `|S|`, `converged`, `valid`, and
+  every residual gap *bit-identical* on all three graphs; the residual gaps are `1e-3 … 3.95`, up to 88,000× the
+  tolerance; and no real graph has a break in the blind band. **The real-data cause is A1.** Had this been
+  "fixed" as diagnosed, the bug would have survived and we would have declared it closed.
+
+  **But do not read this as "B21 is harmless."** It is a separate, real, ACTIVE defect — see **A10** — and it
+  caused every invalid cover on the float-weighted *synthetic* grids (304 rows). Two independent bugs, two
+  different populations, same symptom. Refuting a cause for one dataset says nothing about another, and I
+  compounded the error by then testing B21's exposure on the wrong graphs (initial, not intermediate).
 
 * **"`pivot`'s 9.8× blowup is an implementation error."** No. The recursion→loop conversion was checked against a
   faithful recursion on 200 randomized trials under identical seeds: **0 mismatches** in both the cover and the
