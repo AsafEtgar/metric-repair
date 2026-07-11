@@ -43,6 +43,7 @@ DOWNSTREAM_GRAPHS = {
 }
 K_LIST = (5, 10, 20)
 PAIR_SAMPLE = 20000                 # node pairs for the Spearman estimate on large graphs
+TRIPLET_N = 20000                   # node triples for the triplet-accuracy estimate
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GT_DIR = os.path.join(REPO, "data", "processed", "gt")
@@ -226,12 +227,37 @@ def rank_fidelity(Dgraph_gt, Dtrue, seed):
     return _spearman(gr, gt)
 
 
+def triplet_accuracy(Dgraph_gt, Dtrue, seed, n_triples=TRIPLET_N):
+    """Fraction of sampled node triples (a, b, c) whose TRUE ordering of 'is b or c nearer to a' the
+    graph distance preserves -- a purely ordinal downstream-query metric, sitting between kNN (local)
+    and Spearman (global). Triples tied in the true metric are dropped; both matrices are over the
+    SAME gt-node set/order. DOMR leaves D_F == D_G, so triplet_rep == triplet_obs exactly (self-check)."""
+    n = Dtrue.shape[0]
+    if n < 3:
+        return float("nan")
+    rng = np.random.default_rng(seed)
+    a = rng.integers(0, n, n_triples)
+    b = rng.integers(0, n, n_triples)
+    c = rng.integers(0, n, n_triples)
+    keep = (a != b) & (a != c) & (b != c)
+    a, b, c = a[keep], b[keep], c[keep]
+    true_ord = np.sign(Dtrue[a, c] - Dtrue[a, b])          # > 0 iff b is truly nearer to a than c
+    graph_ord = np.sign(Dgraph_gt[a, c] - Dgraph_gt[a, b])
+    finite = (np.isfinite(Dgraph_gt[a, b]) & np.isfinite(Dgraph_gt[a, c])
+              & np.isfinite(Dtrue[a, b]) & np.isfinite(Dtrue[a, c]))
+    m = finite & (true_ord != 0)                            # ignore triples tied in the true metric
+    if not m.any():
+        return float("nan")
+    return float((graph_ord[m] == true_ord[m]).mean())
+
+
 # ----------------------------------------------------------------------------
 # One graph -> rows (one per cover file per k)
 # ----------------------------------------------------------------------------
 FIELDS = ["graph", "gt_kind", "algo", "variant", "mode", "seed", "n", "n_gt", "k",
           "recovery_obs", "recovery_rep", "lift",
-          "spearman_obs", "spearman_rep", "delta_spearman", "n_covers_seen"]
+          "spearman_obs", "spearman_rep", "delta_spearman",
+          "triplet_obs", "triplet_rep", "delta_triplet", "n_covers_seen"]
 
 
 def _covers_dir(covers_root, graph):
@@ -254,6 +280,7 @@ def run_one_graph(graph, covers_root="results_real_covers"):
     Dobs_gt = Dobs[np.ix_(gt_ix, gt_ix)]
     rec_obs = {k: knn_recovery(Dobs_gt, Dtrue, k) for k in K_LIST}
     sp_obs = rank_fidelity(Dobs_gt, Dtrue, seed=0)
+    trip_obs = triplet_accuracy(Dobs_gt, Dtrue, seed=0)
 
     cdir = _covers_dir(covers_root, graph)
     cover_files = sorted(glob.glob(os.path.join(cdir, "*.txt"))) if cdir else []
@@ -267,6 +294,7 @@ def run_one_graph(graph, covers_root="results_real_covers"):
         DF = build_F_distances(edges, cover, n)
         DF_gt = DF[np.ix_(gt_ix, gt_ix)]
         sp_rep = rank_fidelity(DF_gt, Dtrue, seed=0)
+        trip_rep = triplet_accuracy(DF_gt, Dtrue, seed=0)
         for k in K_LIST:
             rec_rep = knn_recovery(DF_gt, Dtrue, k)
             rows.append({
@@ -277,6 +305,8 @@ def run_one_graph(graph, covers_root="results_real_covers"):
                 "lift": round(rec_rep - rec_obs[k], 6),
                 "spearman_obs": round(sp_obs, 6), "spearman_rep": round(sp_rep, 6),
                 "delta_spearman": round(sp_rep - sp_obs, 6),
+                "triplet_obs": round(trip_obs, 6), "triplet_rep": round(trip_rep, 6),
+                "delta_triplet": round(trip_rep - trip_obs, 6),
                 "n_covers_seen": len(cover_files),
             })
     return rows

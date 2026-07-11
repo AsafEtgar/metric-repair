@@ -125,6 +125,8 @@ banner "analyze + figures -- MDS geometry recovery"
 if $PY experiments/mds_recovery.py --outdir analysis | tee analysis/analyze_mds.out; then
     $PY experiments/mds_plots.py --data analysis/summary_mds.csv --emb analysis/mds_embeddings.npz \
         --outdir analysis/figs/mds || echo "warn: mds_plots failed (data CSV still written)."
+    $PY experiments/mds_sweep.py --only all --plot --outdir analysis \
+        || echo "warn: mds_sweep failed (per-algorithm disparity-vs-cover-size)."
 else
     echo "warn: mds_recovery failed -- skipping MDS figures (does not affect the rest of the pass)."
 fi
