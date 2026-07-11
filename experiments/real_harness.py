@@ -39,7 +39,8 @@ from harness import build_suite, _aggregate, VERIFY, RUN_FIELDS, REGION_H_MAX, _
 DROP_RSP = {"gmr_lp_rsp", "iomr_lp_rsp", "iomr_thr_rsp"}
 RAND_ALGOS = {"pivot", "iomr_rand", "iomr_bestofk", "gmr_rand", "gmr_bestofk"}
 ILP_ALGOS = {"gmr_ilp", "iomr_ilp"}
-ILP_TIMEOUT_S = 17 * 3600                                   # 17h exact-ILP cap (per REAL_EXPERIMENTS.md)
+ILP_TIMEOUT_S = int(float(os.environ.get("ILP_TIMEOUT_S", 17 * 3600)))   # 17h cap; env-overridable for the
+                                                            # long high-mem ILP rerun (set e.g. 169200 = 47h)
 N_SEEDS = 30                                                # randomized algos averaged over 30 seeds
 
 # harness.TIMEOUT_S (1800s) is tuned for the SMALL synthetic graphs (n<=500) where every heuristic finishes
