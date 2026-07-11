@@ -203,7 +203,7 @@ def _points_largemix():
 # Real-graph metric bases for the corruption-recovery experiment: (near-)metric so the base is trustworthy
 # ground truth. dimacs_ny is the headline -- a road network, exactly metric, where kNN neighborhoods ARE
 # geographic neighbors, so "recovering the topology" is directly interpretable. (name -> node count.)
-REAL_BASES = {"dimacs_ny_big_d": 10000, "dimacs_ny_big_t": 10000, "fish1_ten_lin": 1000,
+REAL_BASES = {"dimacs_ny_d": 5000, "dimacs_ny_t": 5000, "fish1_ten_lin": 1000,
               "fish1_ten_log": 1000, "pbmc3k_cosine_knn": 2700}
 
 

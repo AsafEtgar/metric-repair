@@ -116,6 +116,19 @@ else
     echo; echo "note: results_downstream/ empty or absent -- skipping the pure real-data downstream figures."
 fi
 
+# ---------------------------------------------------------------- MDS geometry recovery (ripe/nmr + broken RGG)
+# Self-contained geometric lens (mds_recovery.py): reuses the saved real-graph covers (results_real_covers/,
+# auto-detected) and generates its own broken RGGs, so it needs no results_* array beyond those covers. Non-
+# fatal: a failure here must not abort the main pass. bundle_analysis carries analysis/summary_mds.csv and
+# analysis/figs/mds/* like the rest.
+banner "analyze + figures -- MDS geometry recovery"
+if $PY experiments/mds_recovery.py --outdir analysis | tee analysis/analyze_mds.out; then
+    $PY experiments/mds_plots.py --data analysis/summary_mds.csv --emb analysis/mds_embeddings.npz \
+        --outdir analysis/figs/mds || echo "warn: mds_plots failed (data CSV still written)."
+else
+    echo "warn: mds_recovery failed -- skipping MDS figures (does not affect the rest of the pass)."
+fi
+
 banner "done"
 echo "Check these before trusting anything:"
 echo "  * every collect.py call succeeded (it aborts on stale/orphan/ragged input)"
@@ -123,3 +136,4 @@ echo "  * real_check.py: HARD failures == 0, metric control dimacs_ny_d == 0 row
 echo "  * real_check.py: invalid covers should now be 0 -- the A1 fix repaired bct_*/flycns_male_log"
 echo "  * analyze/rgg_analyze: any 'DROPPING N invalid-cover rows' line is l1_separation non-convergence"
 echo "  * downstream_analyze: DOMR self-check must read 'max |lift| = 0.00e+00'"
+echo "  * mds_recovery: DOMR self-check must read 'max |gap| = 0.00e+00' (D_F == D_G by Lemma 6.1)"
