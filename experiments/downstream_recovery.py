@@ -40,6 +40,18 @@ DOWNSTREAM_GRAPHS = {
     "ripe_atlas":       "coords",   # internet latency, 95.3% non-metric; true = geography
     "nmr_1d3z_atom":    "dmat",     # NOE proton-contact graph;         true = 3-D structure
     "nmr_1d3z_residue": "dmat",
+    # Road network, NY. Both graphs share one node set and one geography (the DIMACS .co coordinates);
+    # `_d` is road distance in metres and is EXACTLY METRIC (|H| = 0), `_t` is travel time and carries
+    # only 17 heavy edges of 6,017. Registered so the MDS/geometry modules can score them; the published
+    # downstream numbers were computed before this and do not include them.
+    "dimacs_ny_d":      "coords",
+    "dimacs_ny_t":      "coords",
+    # Single-cell RNA, 2,700 PBMCs. True distance = the AMBIENT cosine metric of the PCA-50 expression space,
+    # d* = 1 - Pn @ Pn.T (built by ground_truth.build_pbmc3k_gt). This is external, not circular: the graph is
+    # a 15-nearest-neighbour graph, so it keeps 15 of every cell's 2,699 distances -- their weights are
+    # literally 1 - sim[i, j] from this same matrix -- and DISCARDS the rest, which its shortest paths then
+    # have to guess. Scoring those guesses against d* is the same question ripe_atlas asks of geography.
+    "pbmc3k_cosine_knn": "dmat",
 }
 K_LIST = (5, 10, 20)
 PAIR_SAMPLE = 20000                 # node pairs for the Spearman estimate on large graphs

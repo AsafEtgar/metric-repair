@@ -77,29 +77,50 @@ RECOMPUTE_EDGE_CAP = 50_000
 
 # Embedding dimension of the true layout, per dataset. ripe geography and the RGG points are 2-D; an NMR
 # structure is 3-D.
-PURE_REAL_DIM = {"ripe_atlas": 2, "nmr_1d3z_atom": 3, "nmr_1d3z_residue": 3}
+PURE_REAL_DIM = {"ripe_atlas": 2, "nmr_1d3z_atom": 3, "nmr_1d3z_residue": 3,
+                 "dimacs_ny_d": 2, "dimacs_ny_t": 2}
 
 # Broken-RGG control instances: (name, n, avg_degree, direction, frac_broken, magnitude, seed). A couple of
 # corruption directions at a legible size -- illustrative showcases (same generator as realrec), not the 900
 # realrec seeds. inflate = heavy edge off the shortest paths; deflate = shortcut on them (the recoverable one).
+#
+# The n=1000 triple is the SAME instance family at 3.3x the nodes, kept alongside the n=300 control rather
+# than replacing it: at n=300 a map panel is legible but a reader can fairly ask whether the geometry story
+# is a small-sample effect. Same degree, same frac/magnitude, same seed -- only n moves. The exact solvers
+# are the risk (the campaign drops both ILPs above n=500); mds_sweep gives them a raised cap and emits a
+# labelled non-converged row rather than a silent drop if they still do not land.
 RGG_SPECS = [
     ("rgg_inflate", 300, 10, "inflate", 0.15, 3.0, 1000),
     ("rgg_deflate", 300, 10, "deflate", 0.15, 3.0, 1000),
     ("rgg_mixed",   300, 10, "mixed",   0.15, 3.0, 1000),
+    ("rgg_inflate_n1000", 1000, 10, "inflate", 0.15, 3.0, 1000),
+    ("rgg_deflate_n1000", 1000, 10, "deflate", 0.15, 3.0, 1000),
+    ("rgg_mixed_n1000",   1000, 10, "mixed",   0.15, 3.0, 1000),
 ]
 
-# One representative cover per repair variant, computed inline. GMR/IOMR use best-of-k randomized rounding of
-# the covering LP (near size-optimal, the campaign's `*_bestofk`); the greedy shortest-path cover over-covers
-# -- it adds every alternative-path edge -- and `restore` then reweights those too, so it distorts geometry
-# and is a misleadingly pessimistic representative. DOMR is exactly the heavy set (the invariant self-check).
+# One representative cover per repair variant, computed inline. GMR/IOMR use best-of-k DETERMINISTIC (threshold)
+# rounding of the covering LP -- byte-for-byte the campaign's `*_bestofk` (harness._cov, harness.py:214-215,
+# 222-223) -- so this figure's representative cover is the same construction the rest of the paper measures.
+# The greedy shortest-path cover over-covers (it adds every alternative-path edge) and `restore` then reweights
+# those too, so it distorts geometry and is a misleadingly pessimistic representative. DOMR is exactly the heavy
+# set (the invariant self-check).
+#
+# `rounding` MUST be "deterministic": `best_of_k` is read ONLY in the deterministic branch
+# (metric_repair.py:1391-1397; its docstring at :1366 says "deterministic only"). This function previously
+# passed rounding="randomized", so `best_of_k=12` was silently ignored and every `*_bestofk` MDS row was really
+# a single-shot RANDOMIZED rounding at seed 0 -- i.e. the campaign's `*_rand`, mislabelled. Measured on
+# rgg_deflate: the old (randomized) path gave |S|=253, the true deterministic best-of-12 gives |S|=249.
 # oracle="naive" is mandatory here: the rsp oracle needs integer weights and SKIPS float-weighted graphs
 # (RGG points, latency), which would silently drop the cover.
 BEST_OF_K = 12
+LP_SEED = 0                      # seed for _optimal_face_vertices' secondary-objective sampling
+ROUNDING = "deterministic"
+ORACLE = "naive"
 
 
 def _bestofk(G, iomr):
-    return covering_lp_cover(G, solve="separation", rounding="randomized", oracle="naive",
-                             iomr=iomr, seed=0, best_of_k=BEST_OF_K)[0]
+    return covering_lp_cover(G, solve="separation", rounding=ROUNDING, oracle=ORACLE,
+                             iomr=iomr, seed=LP_SEED, best_of_k=BEST_OF_K)[0]
 
 
 COVER_FNS = {
@@ -108,8 +129,21 @@ COVER_FNS = {
     "DOMR": lambda G: domr_alg(G),
 }
 VARIANTS = ("GMR", "IOMR", "DOMR")
+
+# Provenance columns. A panel is identified by its GRAPH parameters (n/avg_degree/frac/magnitude/seed/radius)
+# AND by the COVER that produced it (cover_algo/cover_file plus the cover-side knobs rounding/oracle/best_of_k/
+# lp_seed). Those knobs are exactly the values the `_bestofk` bug misreported, so they are recorded, not assumed.
+PROV_FIELDS = ["avg_degree", "frac", "magnitude", "seed", "radius",
+               "cover_algo", "cover_file", "rounding", "oracle", "best_of_k", "lp_seed"]
 FIELDS = ["dataset", "graph", "corruption", "variant", "family", "mds_algo",
-          "n", "n_used", "dim", "procrustes_disp", "stress", "neg_mass"]
+          "n", "n_used", "dim", "procrustes_disp", "stress", "neg_mass"] + PROV_FIELDS
+
+# The cover-side knobs of a locally recomputed *_bestofk cover (a saved campaign cover overrides these).
+RECOMPUTED_PROV = {"rounding": ROUNDING, "oracle": ORACLE, "best_of_k": BEST_OF_K, "lp_seed": LP_SEED}
+DOMR_PROV = {"cover_algo": "domr", "cover_file": "(recomputed)", "rounding": "", "oracle": "",
+             "best_of_k": "", "lp_seed": ""}
+OBSERVED_PROV = {"cover_algo": "", "cover_file": "", "rounding": "", "oracle": "",
+                 "best_of_k": "", "lp_seed": ""}
 
 
 # ----------------------------------------------------------------------------
@@ -217,10 +251,15 @@ def _norm_cover(cover):
 # One (dataset) -> rows + embeddings.  `store` collects arrays for the figures.
 # ----------------------------------------------------------------------------
 def _embed_and_score(tag, dataset, graph, corruption, family_by_variant,
-                     D_by_variant, true_cfg, dim, store):
+                     D_by_variant, true_cfg, dim, store, n_total, graph_prov, prov_by_variant):
     """Run both MDS algorithms on the observed matrix and each repaired matrix, score vs true_cfg, and record.
     D_by_variant maps a label ('observed'|'GMR'|'IOMR'|'DOMR') -> distance matrix on the SAME node order as
-    true_cfg. Returns a list of CSV row dicts."""
+    true_cfg. Returns a list of CSV row dicts.
+
+    `n_total` is the TRUE node count of the graph (before the mutually-finite-core restriction); `n_used` is
+    the core actually embedded. These used to be set to the same value, which hid the core restriction --
+    the RGG specs ask for n=300 but the giant component of the broken graph is smaller.
+    `graph_prov` carries the generator parameters; `prov_by_variant` maps a label -> its cover's provenance."""
     rows = []
     # neg_mass is a property of the distance matrix; compute once per variant via the classical route.
     embeds = {}
@@ -241,20 +280,25 @@ def _embed_and_score(tag, dataset, graph, corruption, family_by_variant,
             disp, _, aligned = _procrustes_disp(true_cfg, Y)
             if aligned is not None:
                 store[f"emb::{tag}::{label}::{algo}"] = aligned
-            rows.append({
+            row = {
                 "dataset": dataset, "graph": graph, "corruption": corruption,
                 "variant": variant, "family": family, "mds_algo": algo,
-                "n": true_cfg.shape[0], "n_used": true_cfg.shape[0], "dim": dim,
+                "n": n_total, "n_used": true_cfg.shape[0], "dim": dim,
                 "procrustes_disp": round(disp, 6) if np.isfinite(disp) else "",
                 "stress": round(_stress1(D_by_variant[label], Y), 6),
                 "neg_mass": round(embeds[label]["neg_mass"], 6),
-            })
+            }
+            row.update({k: "" for k in PROV_FIELDS})
+            row.update(graph_prov)
+            row.update(prov_by_variant.get(label, OBSERVED_PROV))
+            rows.append(row)
     return rows
 
 
 def _covers_for(Gidx, n):
-    """Compute one cover per variant on the index-space graph; drop a variant whose repair fails/empties."""
-    out = {}
+    """Compute one cover per variant on the index-space graph; drop a variant whose repair fails/empties.
+    Returns (covers, prov) -- prov maps the variant to the provenance of the cover we actually built."""
+    out, prov = {}, {}
     for v in VARIANTS:
         try:
             cov = _norm_cover(COVER_FNS[v](Gidx))
@@ -262,7 +306,9 @@ def _covers_for(Gidx, n):
             print(f"    [skip {v}] {type(e).__name__}: {e}", flush=True)
             continue
         out[v] = cov
-    return out
+        prov[v] = dict(DOMR_PROV) if v == "DOMR" else {
+            "cover_algo": f"{v.lower()}_bestofk", "cover_file": "(recomputed)", **RECOMPUTED_PROV}
+    return out, prov
 
 
 def _saved_cover_file(graph, prefs, covers_root):
@@ -280,28 +326,40 @@ def _saved_cover_file(graph, prefs, covers_root):
 def _acquire_real_covers(graph, Gidx, idx, m_edges, covers_root):
     """One cover per variant for a real graph. DOMR is always recomputed (one APSP -- cheap, exact, keeps the
     self-check honest); GMR/IOMR come from a saved campaign cover when present, else a recomputed bestofk, but
-    only if the graph is under RECOMPUTE_EDGE_CAP (ripe's covering LP is a cluster job)."""
-    out = {}
+    only if the graph is under RECOMPUTE_EDGE_CAP (ripe's covering LP is a cluster job).
+
+    Returns (covers, prov). `prov` is PER VARIANT, not a scalar: GMR and IOMR resolve down DIFFERENT preference
+    lists (GMR_PREFS / IOMR_PREFS), so on the same graph they routinely come from different algorithms and
+    different files -- one shared 'cover_algo' would misattribute at least one of them."""
+    out, prov = {}, {}
     try:
         out["DOMR"] = _norm_cover(domr_alg(Gidx))
+        prov["DOMR"] = dict(DOMR_PROV)
     except Exception as e:                                            # noqa: BLE001
         print(f"    [skip DOMR] {type(e).__name__}: {e}", flush=True)
     for variant, prefs in (("GMR", GMR_PREFS), ("IOMR", IOMR_PREFS)):
         path, algo = _saved_cover_file(graph, prefs, covers_root)
         if path:
             out[variant] = load_cover(path, idx)
+            # A saved campaign cover: its rounding/oracle/best_of_k/lp_seed are the CAMPAIGN's, not ours. The
+            # file name is the honest record (e.g. gmr_bestofk__rand_s0.txt), so name it and leave the knobs
+            # blank rather than assert our local defaults over a cover we did not compute.
+            prov[variant] = {"cover_algo": algo, "cover_file": os.path.basename(path),
+                             "rounding": "", "oracle": "", "best_of_k": "", "lp_seed": ""}
             print(f"    {variant}: saved cover [{algo}] {os.path.basename(path)}  |S|={len(out[variant])}",
                   flush=True)
         elif m_edges <= RECOMPUTE_EDGE_CAP:
             try:
                 out[variant] = _norm_cover(COVER_FNS[variant](Gidx))
+                prov[variant] = {"cover_algo": f"{variant.lower()}_bestofk", "cover_file": "(recomputed)",
+                                 **RECOMPUTED_PROV}
                 print(f"    {variant}: recomputed bestofk  |S|={len(out[variant])}", flush=True)
             except Exception as e:                                    # noqa: BLE001
                 print(f"    [skip {variant}] {type(e).__name__}: {e}", flush=True)
         else:
             print(f"    [skip {variant}] no saved cover and m={m_edges} > {RECOMPUTE_EDGE_CAP}; "
                   f"pass --covers-root to reuse the campaign cover", flush=True)
-    return out
+    return out, prov
 
 
 def run_pure_real(graph, store, covers_root=None):
@@ -314,7 +372,10 @@ def run_pure_real(graph, store, covers_root=None):
     dim = PURE_REAL_DIM[graph]
 
     Gidx = _nx_from_edges(edges, n)
-    covers = _acquire_real_covers(graph, Gidx, idx, len(edges), covers_root)
+    covers, prov = _acquire_real_covers(graph, Gidx, idx, len(edges), covers_root)
+    prov["observed"] = dict(OBSERVED_PROV)
+    graph_prov = {"avg_degree": round(2.0 * len(edges) / max(n, 1), 3), "frac": "", "magnitude": "",
+                  "seed": "", "radius": ""}
 
     Dobs = apsp(edges, n)
     D_gt = {"observed": Dobs[np.ix_(gt_ix, gt_ix)]}
@@ -332,7 +393,8 @@ def run_pure_real(graph, store, covers_root=None):
     if len(core) < D_gt["observed"].shape[0]:
         print(f"    core {len(core)}/{D_gt['observed'].shape[0]} gt nodes (rest not mutually reachable)",
               flush=True)
-    return _embed_and_score(tag, "pure_real", graph, "none", fam, D_by, true_cfg, dim, store)
+    return _embed_and_score(tag, "pure_real", graph, "none", fam, D_by, true_cfg, dim, store,
+                            n_total=n, graph_prov=graph_prov, prov_by_variant=prov)
 
 
 def run_rgg(name, n, deg, direction, frac, mag, seed, store):
@@ -349,7 +411,8 @@ def run_rgg(name, n, deg, direction, frac, mag, seed, store):
     pos = np.array([C.nodes[i]["pos"] for i in range(nc)], dtype=float)   # TRUE 2-D layout
 
     edges = [(u, v, C[u][v]["weight"]) for u, v in C.edges()]
-    covers = _covers_for(C, nc)
+    covers, prov = _covers_for(C, nc)
+    prov["observed"] = dict(OBSERVED_PROV)
     Dobs = apsp(edges, nc)
     D_all = {"observed": Dobs}
     for v, cov in covers.items():
@@ -360,7 +423,11 @@ def run_rgg(name, n, deg, direction, frac, mag, seed, store):
     true_cfg = pos[core]
     fam = {"observed": "-", "GMR": "gmr", "IOMR": "iomr", "DOMR": "gmr"}
     tag = f"{name}::{direction}"
-    return _embed_and_score(tag, "rgg", name, direction, fam, D_by, true_cfg, dim=2, store=store)
+    # `n` is the SPEC node count; `n_used` (set inside _embed_and_score) is the finite core actually embedded.
+    graph_prov = {"avg_degree": deg, "frac": frac, "magnitude": mag, "seed": seed,
+                  "radius": round(float(radius), 6)}
+    return _embed_and_score(tag, "rgg", name, direction, fam, D_by, true_cfg, dim=2, store=store,
+                            n_total=n, graph_prov=graph_prov, prov_by_variant=prov)
 
 
 def _default_covers_root():
