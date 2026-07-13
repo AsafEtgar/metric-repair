@@ -61,10 +61,19 @@ def gates(df, pure="analysis/summary_pure_real.csv", k=20):
             p = P[P.graph == g]
             if o.empty or p.empty:
                 continue
-            e = abs(float(o[f"knn{k}"].iloc[0]) - float(p.recovery_obs.iloc[0]))
+            # Compare on the OLD pipeline's node set (all gt nodes), not our matched finite core -- otherwise
+            # the gate fails on a design choice rather than on a defect. We print both, so the difference is
+            # on the face of the output.
+            col = f"knn{k}_gtset" if f"knn{k}_gtset" in o.columns and pd.notna(o[f"knn{k}_gtset"].iloc[0]) \
+                else f"knn{k}"
+            e = abs(float(o[col].iloc[0]) - float(p.recovery_obs.iloc[0]))
             good = e < 1e-6
-            print(f"  {g:<20} {float(o[f'knn{k}'].iloc[0]):.6f} vs stored {float(p.recovery_obs.iloc[0]):.6f}   "
-                  f"|delta| {e:.2e}   {'OK' if good else '!! DRIFT'}")
+            extra = ""
+            if col.endswith("_gtset") and abs(float(o[f"knn{k}"].iloc[0]) - float(o[col].iloc[0])) > 1e-9:
+                extra = (f"   [we report {float(o[f'knn{k}'].iloc[0]):.6f} over our {int(o.n_core.iloc[0])}-node "
+                         f"matched core; the {int(o.n_gtset.iloc[0])}-node gt set is the gate reference]")
+            print(f"  {g:<20} {float(o[col].iloc[0]):.6f} vs stored {float(p.recovery_obs.iloc[0]):.6f}   "
+                  f"|delta| {e:.2e}   {'OK' if good else '!! DRIFT'}{extra}")
             ok = ok and good; n += 1
         if n == 0:
             print("  !! no overlap with the stored pipeline -- a vacuous gate is a failed gate. FAIL"); ok = False

@@ -93,7 +93,14 @@ def _task_refs(g):
         # The GMR covering polytope is integral here, so a VALID rounded support IS the optimum.
         gmr, gk = val("gmr_lp_rsp", "size"), "exact"
     else:
-        gmr, gk = val("gmr_lp_rsp", "lp_bound"), "lower_bound"
+        # Fall back to the TIGHTEST available LP lower bound, exactly as the IOMR branch below does. Consulting
+        # only gmr_lp_rsp was a silent single point of failure: harness.DROP_LARGE strips gmr_lp_rsp from the
+        # large suite, so `gmr_ref` was NaN on every one of its 6,400 exp1 rows while a perfectly healthy
+        # gmr_lp_naive bound sat unread. And the kind was hardcoded "lower_bound" even when the value was NaN,
+        # so plots._shade_lp stamped "ratio = size / LP lower bound" onto a panel that had no bound and no data.
+        # "none" is the honest label for a task with no reference at all.
+        lbs = [x for x in (val("gmr_lp_rsp", "lp_bound"), val("gmr_lp_naive", "lp_bound")) if pd.notna(x)]
+        gmr, gk = (max(lbs), "lower_bound") if lbs else (np.nan, "none")
 
     # IOMR: exact ILP where it converged; else the tightest LP lower bound (rsp preferred over naive).
     if exact_ok("iomr_ilp"):

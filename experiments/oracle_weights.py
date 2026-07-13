@@ -94,8 +94,28 @@ def build_instance(graph):
     assert true_cfg.shape[0] == len(core), "truth and embedding have different row counts"
 
     H = len(_norm_cover(domr_alg(_nx_from_edges(edges, n))))
-    return dict(graph=graph, nodes=nodes, idx=idx, edges=edges, n=n, m=len(edges), H=H,
-                Dstar=Dstar, row=row, core=core, Dt=Dt, true_cfg=true_cfg, dim=dim, Dobs=Dobs)
+
+    # alpha: the scalar that carries the truth's units into the graph's. See oracle_edges().
+    r = [float(w) / float(Dstar[row[u], row[v]])
+         for u, v, w in edges
+         if u in row and v in row and float(Dstar[row[u], row[v]]) > 1e-12]
+    ratio = float(np.median(r)) if r else 1.0
+    # SAME QUANTITY -> alpha = 1: d* IS the truth and we use it. The NMR ratio of 1.21-1.25 is NOT a unit
+    # conversion -- it is the NOE SLACK, because an upper bound exceeds the distance it bounds. Rescaling by
+    # it would hand the edge 1.21x the truth, which is not the truth. Use d* directly.
+    # DIFFERENT QUANTITY -> alpha = the median ratio, and the arm is asking a WEAKER question (see below).
+    same_units = 0.5 < ratio < 2.0
+    alpha = 1.0 if same_units else ratio
+    note = ("same quantity: alpha = 1, the oracle arm gives the edge its TRUE distance"
+            if same_units else
+            f"DIFFERENT quantity (w/d* = {ratio:.4g}): the oracle arm gives the edge the value it would "
+            "have if it were PROPORTIONAL to the truth. That is the distance-proportional idealisation, "
+            "NOT the truth, and it is a weaker question. Treat this graph's row with care.")
+    print(f"    [{graph}] alpha = {alpha:.4g}  -- {note}", flush=True)
+
+    return dict(graph=graph, nodes=nodes, idx=idx, edges=edges, n=n, m=len(edges), H=H, alpha=alpha,
+                same_units=int(same_units), Dstar=Dstar, row=row, core=core, Dt=Dt, true_cfg=true_cfg,
+                dim=dim, Dobs=Dobs)
 
 
 def score(D, ins):
@@ -108,12 +128,34 @@ def score(D, ins):
 
 
 def oracle_edges(ins, S):
-    """Set the cover's edges to their TRUE distance d*. Every other edge keeps its measurement."""
-    row = ins["row"]
+    """Set the cover's edges to their TRUE distance -- RESCALED INTO THE GRAPH'S UNITS.
+
+    THE BUG THIS FIXES, and it is worth stating because it silently produced a plausible wrong answer.
+    Writing d*(u,v) straight into an edge only makes sense when the graph and the truth measure the SAME
+    QUANTITY. They do on the two NMR graphs (NOE upper bounds and the fold are both in Angstrom; the median
+    ratio is 1.21-1.25, and it exceeds 1 for the physical reason that an NOE is an UPPER bound) and on
+    pbmc3k (the edges ARE the cosine distances; ratio 1.000). They do NOT on dimacs_ny_t, whose edges are
+    TRAVEL TIME while d* is geographic kilometres -- median ratio 24,984 -- nor on ripe_atlas, whose edges
+    are round-trip milliseconds against kilometres -- ratio 0.021.
+
+    Substituting unscaled, we wrote a kilometre value into a graph of seconds. The edge became 25,000 times
+    too short, turned into a vast shortcut, and made the map WORSE than doing nothing (0.0879 against an
+    observed 0.0854). That is not a finding. It is a unit error wearing a finding's clothes.
+
+    So we rescale: alpha = median over edges of w(e)/d*(e), the best scalar conversion between the two
+    measurement systems, and the oracle weight is alpha * d*(e). On the graphs where the units already agree
+    alpha is ~1 and this changes nothing. On the others it turns an incoherent substitution into a
+    well-posed question -- but a WEAKER one, and the paper must say which it is asking:
+
+        SAME QUANTITY (nmr, pbmc3k):  "give this edge its true distance."
+        DIFFERENT QUANTITY (dimacs_ny_t, ripe):  "give this edge the travel time / latency it would have if
+        it were proportional to geography." That is the distance-proportional idealisation, not the truth.
+    """
+    row, a = ins["row"], ins["alpha"]
     out = []
     for u, v, w in ins["edges"]:
         if _key(u, v) in S and u in row and v in row:
-            out.append((u, v, float(ins["Dstar"][row[u], row[v]])))
+            out.append((u, v, a * float(ins["Dstar"][row[u], row[v]])))
         else:
             out.append((u, v, w))
     return out
@@ -122,6 +164,7 @@ def oracle_edges(ins, S):
 def _row(ins, algo, arm, cover_file, size, disp, kn, wall):
     return dict(graph=ins["graph"], algo=algo, arm=arm, cover_file=cover_file, cover_size=size,
                 n=ins["n"], m=ins["m"], H=ins["H"], n_core=len(ins["core"]), dim=ins["dim"],
+                alpha=ins["alpha"], same_units=ins["same_units"],
                 wall=round(wall, 2), disp=disp, **{f"knn{k}": kn[k] for k in KS})
 
 
@@ -133,7 +176,23 @@ def run_one(graph, algo, covers_root, outdir):
     if algo == ALGOS[0]:
         t = time.time()
         d, kn = score(ins["Dobs"], ins)
-        rows.append(_row(ins, "--", "observed", "", 0, d, kn, time.time() - t))
+        r = _row(ins, "--", "observed", "", 0, d, kn, time.time() - t)
+        # A GATE REFERENCE, and a real methodological difference worth recording rather than hiding.
+        # The existing pipeline scores k-NN over ALL ground-truth nodes and lets knn_recovery drop non-finite
+        # entries row by row. We score over the FINITE CORE, because classical MDS cannot accept an infinity
+        # and we want BOTH axes on the SAME node set -- a matched measurement is the whole point of this file.
+        # On nmr_1d3z_atom the graph has 3 components, so 3 of its 343 truth-bearing nodes fall outside the
+        # giant one: our core is 340 and theirs is 343, and that difference is the entire delta (0.441199
+        # against 0.436158 at k=20). We therefore ALSO report the old node set, so the gate can compare like
+        # with like instead of failing on a design choice.
+        gt = np.array(sorted(ins["row"].keys()))
+        tr = np.array([ins["row"][g] for g in gt])
+        Dg = ins["Dobs"][np.ix_(gt, gt)]
+        Dt = ins["Dstar"][np.ix_(tr, tr)]
+        for k in KS:
+            r[f"knn{k}_gtset"] = knn_recovery(Dg, Dt, k)
+        r["n_gtset"] = len(gt)
+        rows.append(r)
         t = time.time()
         d, kn = score(apsp(oracle_edges(ins, {_key(u, v) for u, v, _ in ins["edges"]}), ins["n"]), ins)
         rows.append(_row(ins, "--", "all_oracle", "", ins["m"], d, kn, time.time() - t))

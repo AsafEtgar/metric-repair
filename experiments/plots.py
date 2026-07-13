@@ -20,6 +20,14 @@ approximation-ratio panels two things that used to mislead are now explicit:
   fig2_runtime_vs_n  Exp 1: CPU seconds vs n (log-log, to read the scaling exponent)      (down: lower better)
   fig3_onset_vs_p    Exp 2a: that family's OPT and |H| vs edge density p -- non-metricity onset (~alpha=3/5)
   fig4_ratio_vs_p    Exp 2a+2b: approximation ratio vs edge density p, one panel per exp  (down: lower better)
+  fig_ratio_domr_vs_n  Exp 1: rho_H = |S|/|H| vs n, one panel per p                       (down: lower better)
+  fig_ratio_domr_vs_p  Exp 2a+2b: rho_H = |S|/|H| vs edge density p, one panel per exp    (down: lower better)
+
+The rho_H = |S|/|H| pair exists because on the LARGE grid there is no OPT: DROP_LARGE strips both ILPs and
+both rsp LPs, so `ratio` there is size / LP-lower-bound at best and NaN at worst -- the size/OPT panels go
+blank or misleading exactly where the scaling story lives. |H| = |DOMR| is defined on every instance at every
+scale and needs no solver, so rho_H is the one quality measure that survives; it is also a LOWER bound on the
+GMR approximation ratio (DOMR is a feasible GMR cover, hence GMR_OPT <= |H|).
 
 Each figure is PDF + PNG. Missing experiments/families are skipped with a note rather than crashing.
 """
@@ -37,6 +45,7 @@ from plot_common import (FAMILY, FAMILIES, FAM_TITLE, style_map, ylab, band,    
 
 ONSET_ALPHA = 3 / 5                          # coupled-geometric non-metricity onset (Exp 2a)
 CONNECT_ALPHA = 0.706                        # G(n,p) connectivity threshold at n=500 (Exp 2b crosses it)
+MIN_OK = 3                                   # a median resting on <3 usable samples is not a median -- drop it
 
 
 def _family(df, fam):
@@ -137,22 +146,140 @@ def fig1_ratio_vs_n(df, sty, fam, outdir):
     save(fig, outdir, "fig1_ratio_vs_n")
 
 
-def fig2_runtime_vs_n(df, sty, fam, outdir):
+def _domr_panel(ax, panel, sty, xcol):
+    """One rho_H = |S|/|H| panel. |H| needs no solver and exists on every instance, so NONE of _ratio_panel's
+    reference machinery applies here -- no LP shading, no exact-at-1.0 note, no bound-loosening mark. The one
+    honest thing this panel must do is refuse to draw a median that rests on almost nothing: `n_ok` counts the
+    samples that actually returned a cover (timeouts and skips leave NaN rows that median() silently ignores),
+    and the dropped samples are the HARD ones -- so a two-sample median is not a thin line, it is a wrong one.
+    Points below MIN_OK are dropped; algorithms left with no drawable point at all are returned and named."""
+    empty = []
+    for algo, gg in panel.groupby("algo"):
+        keep = gg[gg["n_ok"] >= MIN_OK] if "n_ok" in gg else gg
+        if not band(ax, keep, xcol, "ratio_domr_med", "ratio_domr_q25", "ratio_domr_q75", algo, sty[algo],
+                    iqr=False):
+            empty.append(algo)
+    ax.axhline(1.0, color="k", lw=0.7, ls="--", alpha=0.5)      # |S| = |H|: the decrease-only (DOMR) cover
+    if empty:
+        lo, hi = ax.get_ylim()                                  # headroom, so the note never sits ON a curve
+        ax.set_ylim(lo, hi + 0.22 * (hi - lo))
+        note(ax, f"no median (<{MIN_OK} usable samples):\n" + ", ".join(sorted(empty)), loc="upper left")
+    return empty
+
+
+def fig_ratio_domr_vs_n(df, sty, fam, outdir):
     e = _family(df[df["exp"] == "exp1"], fam)
     if e.empty:
-        print(f"    skip fig2 [{fam}] (no exp1 rows)"); return
+        print(f"    skip fig_ratio_domr_vs_n [{fam}] (no exp1 rows)"); return
     ps = sorted(e["p"].dropna().unique())
     fig, axes = plt.subplots(len(ps), 1, figsize=(7.2, 3.9 * len(ps)), squeeze=False, sharex=True)
     for i, p in enumerate(ps):
         ax = axes[i][0]
+        _domr_panel(ax, e[e["p"] == p], sty, "x")
+        ax.set_title(f"p = {p}")
+        if i == len(ps) - 1:
+            ax.set_xlabel("n")
+        ax.set_ylabel(ylab(r"$\rho_H$ = |S| / |H|", "down"))
+    fig.suptitle(f"Exp 1 — cover size against the heavy set, $\\rho_H$ = |S|/|H|, vs n — {FAM_TITLE[fam]}",
+                 fontsize=11)
+    fig.tight_layout(rect=[0, 0, 1, 0.97])
+    figure_legend(fig)                              # attach legend but keep it off save() -- see fig1 note
+    save(fig, outdir, "fig_ratio_domr_vs_n")
+
+
+def fig_ratio_domr_vs_p(df, sty, fam, outdir):
+    exps = [x for x in ("exp2a", "exp2b") if (df["exp"] == x).any()]
+    if not exps:
+        print(f"    skip fig_ratio_domr_vs_p [{fam}] (no exp2 rows)"); return
+    # sharex=False: exp2a and exp2b span different p-ranges, so let each experiment panel scale to its own.
+    fig, axes = plt.subplots(len(exps), 1, figsize=(7.2, 3.9 * len(exps)), squeeze=False, sharex=False)
+    for i, exp in enumerate(exps):
+        ax = axes[i][0]
+        sub = _family(df[df["exp"] == exp], fam)
+        _domr_panel(ax, sub, sty, "p")
+        if exp == "exp2b" and not sub.empty:
+            n0 = sub.dropna(subset=["p", "x"])
+            if not n0.empty:
+                n = float(n0.iloc[0]["p"]) ** (-1.0 / float(n0.iloc[0]["x"]))
+                ax.axvline(n ** (-CONNECT_ALPHA), color="grey", lw=0.8, ls=":", alpha=0.7)
+        ax.set_title(exp)
+        ax.set_xlabel(r"edge density $p$")
+        ax.set_ylabel(ylab(r"$\rho_H$ = |S| / |H|", "down"))
+    fig.suptitle(f"Exp 2 — $\\rho_H$ = |S|/|H| vs edge density p — {FAM_TITLE[fam]}", fontsize=11)
+    fig.tight_layout(rect=[0, 0, 1, 0.97])
+    figure_legend(fig)                              # attach legend but keep it off save() -- see fig1 note
+    save(fig, outdir, "fig_ratio_domr_vs_p")
+
+
+def _runtime_from_rows(rows, fam):
+    """CPU median/IQR over COMPLETED runs, plus each algorithm's DNF onset.
+
+    WHY THIS DOES NOT READ cpu_med FROM THE SUMMARY. A killed run records cpu = 0.0 and peak_mb = 0.0 -- the
+    wall clock correctly holds the cap, but the CPU counter is never sampled, so zero here is a MISSING-VALUE
+    SENTINEL, not a measurement. Every timeout row in the geometric arrays carries it (2,670 of 2,670 on the
+    large grid, 2,505 of 2,505 on the small one). Aggregated into a median it makes the most expensive method
+    look like the cheapest: `gmr_bestofk` summarises to 0.0 s against a true 1,324 s over the 4 runs of 720
+    that finished. And because this axis is logarithmic, cpu_med = 0 cannot be drawn AT ALL -- matplotlib drops
+    the point silently, so the curve does not sag, it VANISHES. The slowest algorithm in the suite disappeared
+    from this figure entirely, legend and all, and a reader would conclude it was never run.
+
+    So: aggregate over status == "ok", and where an algorithm stops finishing, say so on the figure rather
+    than letting its line end without comment. A curve that stops must be seen to stop.
+    """
+    r = rows[rows["exp"] == "exp1"]
+    r = r[r["variant"].isin(FAMILY[fam])]
+    if r.empty:
+        return None, None
+    ok = r[r["status"] == "ok"]
+    med = (ok.groupby(["algo", "p", "n"])["cpu"]
+             .agg(cpu_med="median",
+                  cpu_q25=lambda s: s.quantile(0.25),
+                  cpu_q75=lambda s: s.quantile(0.75))
+             .reset_index().rename(columns={"n": "x"}))
+    # the first n at which an algorithm returns on FEWER THAN HALF its tasks -- where the median stops existing
+    tot = r.groupby(["algo", "p", "n"]).size().rename("n_tasks")
+    won = ok.groupby(["algo", "p", "n"]).size().rename("n_ok")
+    rate = pd.concat([tot, won], axis=1).fillna(0).reset_index()
+    rate["frac"] = rate["n_ok"] / rate["n_tasks"]
+    return med, rate
+
+
+def fig2_runtime_vs_n(df, sty, fam, outdir, rows=None):
+    if rows is None:
+        print(f"    skip fig2 [{fam}] (needs --rows: the summary's cpu_med is corrupted by the "
+              f"cpu=0 timeout sentinel -- see _runtime_from_rows)")
+        return
+    e, rate = _runtime_from_rows(rows, fam)
+    if e is None or e.empty:
+        print(f"    skip fig2 [{fam}] (no exp1 rows)"); return
+    ps = sorted(e["p"].dropna().unique())
+    fig, axes = plt.subplots(len(ps), 1, figsize=(7.2, 3.9 * len(ps)), squeeze=False, sharex=True)
+    dnf = []
+    for i, p in enumerate(ps):
+        ax = axes[i][0]
         for algo, gg in e[e["p"] == p].groupby("algo"):
+            gg = gg.sort_values("x")
             band(ax, gg, "x", "cpu_med", "cpu_q25", "cpu_q75", algo, sty[algo], logx=True, logy=True, iqr=False)
+            # mark the last point at which it still finished, if it stops finishing inside the sweep
+            rr = rate[(rate["algo"] == algo) & (rate["p"] == p)].sort_values("n")
+            dead = rr[rr["frac"] == 0.0]
+            if len(dead) and len(gg):
+                first_dead = int(dead["n"].min())
+                last_ok = gg["x"].max()
+                ax.plot([last_ok], [gg[gg["x"] == last_ok]["cpu_med"].iloc[0]], marker="x", ms=11, mew=2.2,
+                        color=sty[algo]["color"], linestyle="none", zorder=6)
+                dnf.append(f"{algo} (p={p:g}, from n={first_dead})")
         ax.set_xscale("log"); ax.set_yscale("log")
         ax.set_title(f"p = {p}")
         if i == len(ps) - 1:
             ax.set_xlabel("n")
         ax.set_ylabel(ylab("CPU seconds", "down"))
-    fig.suptitle(f"Exp 1 — CPU time vs n (log-log) — {FAM_TITLE[fam]}", fontsize=11)
+    if dnf:
+        note(axes[0][0], "x = stops returning within the cap (the line ends because the\n"
+                         "method stopped finishing, NOT because it got cheap):\n" + "\n".join(sorted(set(dnf))),
+             loc="upper left")
+    fig.suptitle(f"Exp 1 — CPU time vs n (log-log), medians over runs that FINISHED — {FAM_TITLE[fam]}",
+                 fontsize=11)
     fig.tight_layout(rect=[0, 0, 1, 0.97])
     figure_legend(fig)                          # attach legend but keep it off save() -- see fig1 note
     save(fig, outdir, "fig2_runtime_vs_n")      # (explicit bbox_extra_artists would drop the suptitle)
@@ -212,11 +339,21 @@ def fig4_ratio_vs_p(df, sty, fam, outdir):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--summary", required=True, help="summary.csv from experiments/analyze.py")
+    ap.add_argument("--rows", default=None,
+                    help="rows_with_ratio.csv beside --summary. REQUIRED for the runtime figure: the "
+                         "summary's cpu_med is corrupted by the cpu=0 timeout sentinel.")
     ap.add_argument("--outdir", default="analysis/figs/geometric",
                     help="root for the figures; per-family gmr/ and iomr/ subfolders are created under it")
     a = ap.parse_args()
 
     df = pd.read_csv(a.summary)
+    rows_path = a.rows or os.path.join(os.path.dirname(a.summary), "rows_with_ratio.csv")
+    rows = pd.read_csv(rows_path, low_memory=False) if os.path.exists(rows_path) else None
+    if rows is None:
+        print(f"  WARNING: {rows_path} not found -- the runtime figure will be SKIPPED (the summary's "
+              f"cpu_med cannot be trusted; see _runtime_from_rows).")
+    else:
+        print(f"  loaded {len(rows)} per-task rows for the runtime figure (completed runs only)")
     sty = style_map(df["algo"].dropna().unique())
     print(f"loaded {len(df)} summary rows; experiments={sorted(df['exp'].unique())}")
     for fam in FAMILIES:
@@ -224,9 +361,11 @@ def main():
         os.makedirs(outdir, exist_ok=True)
         print(f"[{fam}] {FAM_TITLE[fam]} -> {outdir}")
         fig1_ratio_vs_n(df, sty, fam, outdir)
-        fig2_runtime_vs_n(df, sty, fam, outdir)
+        fig2_runtime_vs_n(df, sty, fam, outdir, rows=rows)
         fig3_onset_vs_p(df, sty, fam, outdir)
         fig4_ratio_vs_p(df, sty, fam, outdir)
+        fig_ratio_domr_vs_n(df, sty, fam, outdir)
+        fig_ratio_domr_vs_p(df, sty, fam, outdir)
     print(f"figures -> {a.outdir}/{{gmr,iomr}}")
 
 

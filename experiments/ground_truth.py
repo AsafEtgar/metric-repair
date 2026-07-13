@@ -5,6 +5,10 @@ Strong tier (built here):
   ripe_atlas          -- anchor lat/lon (anchors_meta.csv) -> haversine geographic distance.
   nmr_1d3z_residue    -- 1D3Z.pdb model 1 -> min proton-proton 3D distance between residues.
   nmr_1d3z_atom       -- same, between NOE atom-groups (resid:token, wildcards *,# over proton names).
+  dimacs_ny_d/_t      -- DIMACS .co node coordinates -> haversine geography. The road net's true metric is
+                         the map it is drawn on; _d (metres) and _t (travel time) share one geography.
+  pbmc3k_cosine_knn   -- the ambient PCA-50 expression space (d* = 1 - Pn @ Pn.T) the 15-NN graph is drawn
+                         from: the graph keeps 15 neighbours per cell, d* holds all 2,700.
 
 Artifacts land in data/processed/gt/:  <graph>__coords.csv (node,lat,lon)  for coord-based (haversine),
 or  <graph>__truedist.npz (nodes, D)  for set-based min distances (nmr). `load_gt(graph)` returns
@@ -58,6 +62,96 @@ def build_ripe_gt():
             la, lo = meta[int(u)]; w.writerow([u, la, lo])
     print(f"ripe_atlas GT: {len(nodes)}/{G.number_of_nodes()} anchors mapped "
           f"({len(miss)} missing) -> {path}")
+    return path
+
+
+# ----------------------------------------------------------------------------
+# DIMACS road network: the challenge's .co coordinate file -> haversine geography
+# ----------------------------------------------------------------------------
+
+def build_dimacs_gt(graph):
+    """USA-road-d.NY.co.gz -> gt/<graph>__coords.csv. The .co lines are `v <id> <lon> <lat>` in
+    MICRODEGREES, LONGITUDE FIRST (the DIMACS convention -- reversing them silently rotates the map).
+    build_real_graphs.py writes ORIGINAL DIMACS node ids into the processed CSV, so the join is direct.
+    Both dimacs_ny_d (metres) and dimacs_ny_t (travel time) share the same node set and the same geography."""
+    import csv
+    import gzip
+    G = load_edgelist(os.path.join("data", "processed", f"{graph}.csv"))
+    want = {str(u) for u in G.nodes()}
+    meta = {}
+    with gzip.open(os.path.join(RAW, "dimacs", "USA-road-d.NY.co.gz"), "rt") as f:
+        for ln in f:
+            if not ln.startswith("v "):
+                continue
+            _, nid, lon, lat = ln.split()
+            if nid in want:
+                meta[nid] = (int(lat) / 1e6, int(lon) / 1e6)          # microdegrees -> degrees
+    nodes = [u for u in G.nodes() if str(u) in meta]
+    lats = [meta[str(u)][0] for u in nodes]
+    lons = [meta[str(u)][1] for u in nodes]
+    # NY city/state box -- a lat/lon swap or a sign error lands far outside it, and would otherwise pass
+    # silently as a plausible-looking but meaningless "geography".
+    assert 40.0 < min(lats) and max(lats) < 45.5, f"{graph}: latitudes out of NY range {min(lats)}..{max(lats)}"
+    assert -80.0 < min(lons) and max(lons) < -71.0, f"{graph}: longitudes out of NY range {min(lons)}..{max(lons)}"
+    os.makedirs(GT_DIR, exist_ok=True)
+    path = os.path.join(GT_DIR, f"{graph}__coords.csv")
+    with open(path, "w", newline="") as f:
+        w = csv.writer(f); w.writerow(["node", "lat", "lon"])
+        for u in nodes:
+            la, lo = meta[str(u)]; w.writerow([u, la, lo])
+    print(f"{graph} GT: {len(nodes)}/{G.number_of_nodes()} nodes mapped -> {path}")
+    return path
+
+
+# ----------------------------------------------------------------------------
+# pbmc3k single-cell RNA: the ambient expression space the k-NN graph is drawn from
+# ----------------------------------------------------------------------------
+
+def build_pbmc3k_gt():
+    """pbmc3k_cosine_knn -> gt/pbmc3k_cosine_knn__truedist.npz (nodes, D), D = ambient cosine distance.
+
+    THE TRUTH. `build_pbmc3k` (build_real_graphs.py) log-CPM normalizes the 10x counts, keeps the top-2000
+    highly-variable genes, projects to 50 PCs, row-normalizes to `Pn`, and sets each k-NN edge weight to
+    `1 - (Pn @ Pn.T)[i, j]`. The true distance is that same ambient matrix, over ALL pairs:
+
+            d*  =  1 - Pn @ Pn.T          (2700 x 2700, cosine distance in PCA-50 expression space)
+
+    EXTERNAL, NOT CIRCULAR. d* is not read off the graph: the graph keeps only 15 neighbours per cell and
+    throws the other 2,684 columns of every row away; its shortest paths GUESS them. The 31,639 surviving
+    edge weights literally equal d* on their pairs (asserted below to 0 error), which is exactly what makes
+    the comparison honest -- the graph is a sparse, path-completed proxy of a space we can compute in full.
+    Asking whether repair moves its shortest-path metric closer to d* is the same question `ripe_atlas` asks
+    of geography and `nmr_1d3z` of the PDB structure.
+
+    ORDER. Rows are CELL order (expression-matrix row index), and `nodes` are those indices as STRINGS,
+    "0".."2699". downstream_recovery.load_graph sorts labels as strings ('10' < '2'), so the two orders
+    DIFFER; true_distances() does the permutation from this npz's `nodes` array. Writing D in the loader's
+    order instead would double-permute it and yield plausible, stable, meaningless numbers.
+
+    Reuses mds_rna.ambient_truth verbatim (imported lazily -- it drags in scipy/sklearn-free SVD only when
+    this builder actually runs), so the truth here and the truth the MDS figure uses cannot drift apart.
+    """
+    from mds_rna import ambient_truth                     # noqa: E402  (lazy: heavy, and only needed here)
+    graph = "pbmc3k_cosine_knn"
+    G = load_edgelist(os.path.join("data", "processed", f"{graph}.csv"))
+    labels = sorted(int(u) for u in G.nodes())
+    n = len(labels)
+    assert labels == list(range(n)), \
+        f"{graph}: node labels are not exactly 0..{n - 1}; they cannot index the expression matrix"
+
+    D = ambient_truth(n)                                  # cell order: row i == cell i
+    assert D.shape == (n, n), f"{graph}: truth is {D.shape}, expected ({n}, {n})"
+
+    # The graph's edge weights ARE 1 - sim on those pairs. If the space or the order is wrong this is the
+    # one check that catches it -- everything downstream would otherwise be plausible and meaningless.
+    err = max(abs(float(w) - D[int(u), int(v)]) for u, v, w in G.edges(data="weight"))
+    assert err < 1e-9, f"{graph}: max |edge weight - d*| = {err:.2e} -- truth is in the wrong space or order"
+
+    os.makedirs(GT_DIR, exist_ok=True)
+    path = os.path.join(GT_DIR, f"{graph}__truedist.npz")
+    np.savez(path, nodes=np.array([str(i) for i in range(n)]), D=D)
+    print(f"{graph} GT: {n} cells, ambient cosine (PCA-50); max |edge weight - d*| over "
+          f"{G.number_of_edges()} edges = {err:.2e} -> {path}")
     return path
 
 
@@ -170,7 +264,10 @@ def subdist(nodes_all, D_all, nodes_sub):
 
 BUILDERS = {"ripe_atlas": build_ripe_gt,
             "nmr_1d3z_residue": lambda: build_nmr_gt("nmr_1d3z_residue"),
-            "nmr_1d3z_atom": lambda: build_nmr_gt("nmr_1d3z_atom")}
+            "nmr_1d3z_atom": lambda: build_nmr_gt("nmr_1d3z_atom"),
+            "dimacs_ny_d": lambda: build_dimacs_gt("dimacs_ny_d"),
+            "dimacs_ny_t": lambda: build_dimacs_gt("dimacs_ny_t"),
+            "pbmc3k_cosine_knn": build_pbmc3k_gt}
 
 
 def main():

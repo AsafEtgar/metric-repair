@@ -121,14 +121,35 @@ fi
 # auto-detected) and generates its own broken RGGs, so it needs no results_* array beyond those covers. Non-
 # fatal: a failure here must not abort the main pass. bundle_analysis carries analysis/summary_mds.csv and
 # analysis/figs/mds/* like the rest.
+#
+# ORDER MATTERS: mds_recovery -> mds_sweep -> mds_plots. mds_plots' per-algorithm grid (fig_mds_grid_*) reads
+# the SWEEP's summary_mds_sweep.csv + mds_sweep_embeddings.npz, so plotting before the sweep silently drops
+# every grid figure (it warns and carries on). The old order ran the sweep last.
+#
+# NOTE on the sweep's CSV: mds_sweep MERGES into analysis/summary_mds_sweep.csv rather than truncating it,
+# because _iter_saved only sees covers that exist ON THIS MACHINE. ripe's `pivot` and `iomr_rand` covers live
+# only on the cluster; a truncating local run would delete those rows permanently (the CSV is gitignored).
+# Merged-in rows are stamped source=cluster. It also writes a .bak first. Do not "simplify" that away.
 banner "analyze + figures -- MDS geometry recovery"
 if $PY experiments/mds_recovery.py --outdir analysis | tee analysis/analyze_mds.out; then
-    $PY experiments/mds_plots.py --data analysis/summary_mds.csv --emb analysis/mds_embeddings.npz \
-        --outdir analysis/figs/mds || echo "warn: mds_plots failed (data CSV still written)."
     $PY experiments/mds_sweep.py --only all --plot --outdir analysis \
-        || echo "warn: mds_sweep failed (per-algorithm disparity-vs-cover-size)."
+        || echo "warn: mds_sweep failed (per-algorithm disparity; the grid figures will be skipped)."
+    $PY experiments/mds_plots.py --data analysis/summary_mds.csv --emb analysis/mds_embeddings.npz \
+        --sweep-data analysis/summary_mds_sweep.csv --sweep-emb analysis/mds_sweep_embeddings.npz \
+        --outdir analysis/figs/mds || echo "warn: mds_plots failed (data CSVs still written)."
 else
     echo "warn: mds_recovery failed -- skipping MDS figures (does not affect the rest of the pass)."
+fi
+
+# ---------------------------------------------------------------- cost law (n / m / |H| scaling exponents)
+# The paper's "three algorithms, three cost laws" rests on this and on nothing else -- there was no cost-law
+# artifact in analysis/ at all. Guarded and non-fatal like the MDS block: it is a standalone sweep, not a
+# consumer of the results_* arrays. Sweep H (the |H| axis) has never been run; if it fails, SAY SO -- the
+# paper must then downgrade its |H| claims from measured laws to mechanism arguments.
+if [ -f experiments/cost_law.py ]; then
+    banner "cost law"
+    $PY experiments/cost_law.py --seeds 3 --plot --outdir analysis | tee analysis/cost_law.out \
+        || echo "warn: cost_law failed -- analysis/cost_law.csv NOT written. The |H| axis is unmeasured."
 fi
 
 banner "done"
@@ -139,3 +160,6 @@ echo "  * real_check.py: invalid covers should now be 0 -- the A1 fix repaired b
 echo "  * analyze/rgg_analyze: any 'DROPPING N invalid-cover rows' line is l1_separation non-convergence"
 echo "  * downstream_analyze: DOMR self-check must read 'max |lift| = 0.00e+00'"
 echo "  * mds_recovery: DOMR self-check must read 'max |gap| = 0.00e+00' (D_F == D_G by Lemma 6.1)"
+echo "  * mds_sweep: '0 not measured', and summary_mds_sweep.csv still has ripe's pivot + iomr_rand rows"
+echo "    (grep them -- exit 0 is NOT evidence a panel landed; a swallowed wiring bug once looked identical)"
+echo "  * mds_plots: fig_mds_grid_*_{gmr,iomr}.png exist, and the domr panel is identical to observed"

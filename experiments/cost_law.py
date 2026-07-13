@@ -65,7 +65,15 @@ def _algos():
     }
 
 
-def run_sweep(name, points, seeds):
+def _write_csv(rows, path):
+    import csv
+    with open(path, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=list(rows[0].keys())); w.writeheader()
+        for r in rows:
+            w.writerow(r)
+
+
+def run_sweep(name, points, seeds, checkpoint=None, sofar=None):
     """points: list of (knob_value, (n, deg, n_corrupt)). Returns list of dict rows."""
     print(f"\n=== sweep {name} ===", flush=True)
     algos = _algos()
@@ -92,6 +100,8 @@ def run_sweep(name, points, seeds):
         rows.append(dict(sweep=name, knob=knob, n=nn, m=mm, H=hh, **{f"cpu_{a}": med[a] for a in algos}))
         print("  %-8s n=%-5d m=%-6d |H|=%-5d  %s" % (name, nn, mm, hh,
               "  ".join("%s=%.3f" % (a, med[a]) for a in algos)), flush=True)
+        if checkpoint:                              # partial artifact after every point; a long l1sep call
+            _write_csv((sofar or []) + rows, checkpoint)   # in one sweep can never cost us the others
     return rows
 
 
@@ -103,64 +113,151 @@ def loglog_slope(xs, ys):
     return float(np.polyfit(lx, ly, 1)[0])
 
 
+AXES = (("N", "n", "$n$ (vertices; $m$ grows with $n$, $|H|$ fixed)"),
+        ("M", "m", "$m$ (edges; $n$, $|H|$ fixed)"),
+        ("H", "H", "$|H|$ (broken edges; $n$, $m$ fixed)"))
+COLOR = {"domr": "#888888", "pivot": "#0072B2", "gmr_bestofk": "#009E73", "l1sep_gmr": "#D55E00"}
+
+
+def read_csv_rows(path):
+    import csv
+    out = []
+    for r in csv.DictReader(open(path)):
+        d = {k: r[k] for k in ("sweep",)}
+        for k in ("knob", "n", "m", "H"):
+            d[k] = int(r[k])
+        for k in r:
+            if k.startswith("cpu_"):
+                d[k] = float(r[k]) if r[k] not in ("", "nan") else float("nan")
+        out.append(d)
+    return out
+
+
+def fit_slopes(rows, algos):
+    """Per algo, the log-log slope against the knob each sweep actually varies."""
+    byS = {s: [r for r in rows if r["sweep"] == s] for s in ("N", "M", "H")}
+    slopes = {}
+    for al in algos:
+        sl = {}
+        for S, xk, _ in AXES:
+            xs = [max(r[xk], 1) for r in byS[S]]
+            sl[S] = loglog_slope(xs, [r[f"cpu_{al}"] for r in byS[S]])
+        slopes[al] = sl
+    return byS, slopes
+
+
+def make_figure(rows, algos, outdir):
+    import matplotlib.pyplot as plt
+    byS, slopes = fit_slopes(rows, algos)
+    fig, axes = plt.subplots(1, 3, figsize=(13, 4.0))
+    for ax, (S, xk, xl) in zip(axes, AXES):
+        d = byS[S]
+        for al in algos:
+            pts = [(r[xk], r[f"cpu_{al}"]) for r in d
+                   if r[xk] and np.isfinite(r[f"cpu_{al}"]) and r[f"cpu_{al}"] > 0]
+            if len(pts) < 2:
+                continue
+            ax.plot([p[0] for p in pts], [p[1] for p in pts], marker="o", ms=4, color=COLOR[al],
+                    label="%s  (slope %.2f)" % (al, slopes[al][S]))
+            # The l1sep time-guard truncates the series. An unmarked short line reads as "it got cheap";
+            # it means the opposite -- the next point was too EXPENSIVE to run. Say so on the figure.
+            dropped = [r[xk] for r in d if r[xk] and not np.isfinite(r[f"cpu_{al}"])]
+            if dropped:
+                x0, y0 = pts[-1]
+                ax.annotate("", xy=(x0, y0), xytext=(14, 20), textcoords="offset points",
+                            arrowprops=dict(arrowstyle="<|-", color=COLOR[al], lw=1.2))
+                ax.text(0.03, 0.97, "%s: %.0f s guard --\n%d larger point%s too EXPENSIVE to run\n"
+                        "(the line stops; the cost does not)" %
+                        (al, L1_GUARD_S, len(dropped), "s" if len(dropped) > 1 else ""),
+                        transform=ax.transAxes, color=COLOR[al], fontsize=6.5, ha="left", va="top")
+        ax.set_xscale("log"); ax.set_yscale("log")
+        ax.set_xlabel(xl); ax.grid(alpha=0.25, which="both")
+        ax.legend(fontsize=6.5, frameon=False, loc="lower right")
+    axes[0].set_ylabel("runtime (s), median of 3 seeds")
+    fig.suptitle("Three cost laws. pivot: flat in $m$ and $|H|$, steep in $n$ -- it completes the graph to "
+                 "$\\Theta(n^2)$ first.  bestofk: ~linear in $m$.\n"
+                 "l1sep: SIZE-bound, not $|H|$-bound -- 35$\\times$ more broken edges costs it 1.9$\\times$, "
+                 "while 2.6$\\times$ more edges costs it 9.3$\\times$.", fontsize=8.5)
+    fig.tight_layout(rect=(0, 0, 1, 0.90))
+    for ext in ("pdf", "png"):
+        fig.savefig(os.path.join(outdir, f"fig_cost_law.{ext}"), dpi=150, bbox_inches="tight")
+    print(f"wrote {outdir}/fig_cost_law.pdf / .png")
+
+
+def rounds_probe(outdir, seed=1000):
+    """Decompose l1sep's cost into (separation rounds) x (cost per round) along each axis.
+
+    This is what adjudicates 'l1sep is size-bound, |H| only sets the round count'. It also checks the
+    plateau at large |H| is a real plateau and not the max_rounds=200 cap firing (which would return a
+    possibly-invalid cover and cap the runtime artificially -- see l1_separation's docstring).
+    """
+    from metric_repair import l1_separation
+    pts = ([("H", 300, 10, c) for c in (4, 12, 30, 70, 140)] +
+           [("M", 300, d, 12) for d in (6, 10, 16)] +
+           [("N", nn, 10, 12) for nn in (150, 250, 400)])
+    rows = []
+    print("\n=== l1sep round decomposition (seed %d) ===" % seed)
+    print("%-6s %5s %6s %5s %9s %7s %10s %10s" % ("sweep", "n", "m", "|H|", "seconds", "rounds",
+                                                  "converged", "s/round"))
+    for S, n, deg, ncorr in pts:
+        G, nn, mm, hh = instance(n, deg, ncorr, seed)
+        t = time.perf_counter()
+        S_cov, info = l1_separation(G, general=True, return_info=True)
+        dt = time.perf_counter() - t
+        r = int(info.get("rounds") or 0)
+        row = dict(sweep=S, n=nn, m=mm, H=hh, seconds=round(dt, 3), rounds=r,
+                   converged=bool(info.get("converged")), sec_per_round=round(dt / max(r, 1), 4),
+                   cover_size=len(S_cov), max_rounds=200, seed=seed)
+        rows.append(row)
+        print("%-6s %5d %6d %5d %9.2f %7d %10s %10.3f" % (S, nn, mm, hh, dt, r,
+                                                          row["converged"], row["sec_per_round"]), flush=True)
+    path = os.path.join(outdir, "cost_law_rounds.csv")
+    _write_csv(rows, path)
+    print(f"wrote {path}")
+    return rows
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--seeds", type=int, default=3)
     ap.add_argument("--plot", action="store_true", help="also write fig_cost_law (needs matplotlib)")
+    ap.add_argument("--replot", action="store_true", help="rebuild the figure from an existing cost_law.csv")
+    ap.add_argument("--rounds", action="store_true",
+                    help="also write cost_law_rounds.csv: l1sep rounds vs cost-per-round on each axis")
     ap.add_argument("--outdir", default="analysis")
     a = ap.parse_args()
     os.makedirs(a.outdir, exist_ok=True)
-
-    N = [(n, (n, 10, 12)) for n in (150, 250, 400, 600, 900)]     # vary n; m grows; |H| fixed
-    M = [(d, (300, d, 12)) for d in (6, 10, 16, 24, 34)]          # vary m at fixed n; |H| fixed
-    H = [(c, (300, 10, c)) for c in (4, 12, 30, 70, 140)]         # vary |H| at fixed n, m
-
-    rows = run_sweep("N", N, a.seeds) + run_sweep("M", M, a.seeds) + run_sweep("H", H, a.seeds)
-    import csv
-    cols = list(rows[0].keys())
     path = os.path.join(a.outdir, "cost_law.csv")
-    with open(path, "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=cols); w.writeheader()
-        for r in rows:
-            w.writerow(r)
-
     algos = list(_algos())
-    byS = {s: [r for r in rows if r["sweep"] == s] for s in ("N", "M", "H")}
-    print("\n=== log-log slopes  d(log time)/d(log knob) ===")
-    print("%-12s %8s %8s %8s" % ("algo", "vs n (N)", "vs m (M)", "vs |H| (H)"))
-    slopes = {}
-    for al in algos:
-        sn = loglog_slope([r["n"] for r in byS["N"]], [r[f"cpu_{al}"] for r in byS["N"]])
-        sm = loglog_slope([r["m"] for r in byS["M"]], [r[f"cpu_{al}"] for r in byS["M"]])
-        sh = loglog_slope([max(r["H"], 1) for r in byS["H"]], [r[f"cpu_{al}"] for r in byS["H"]])
-        slopes[al] = (sn, sm, sh)
-        print("%-12s %8.2f %8.2f %8.2f" % (al, sn, sm, sh))
-    print(f"\nwrote {path}")
 
-    if a.plot:
-        import matplotlib.pyplot as plt
-        color = {"domr": "#888888", "pivot": "#0072B2", "gmr_bestofk": "#009E73", "l1sep_gmr": "#D55E00"}
-        fig, axes = plt.subplots(1, 3, figsize=(12, 3.6))
-        for ax, (S, xk, xl) in zip(axes, (("N", "n", "$n$ (vertices; $m$ grows, $|H|$ fixed)"),
-                                          ("M", "m", "$m$ (edges; $n$, $|H|$ fixed)"),
-                                          ("H", "H", "$|H|$ (broken edges; $n$, $m$ fixed)"))):
-            d = byS[S]
-            for al in algos:
-                xs = [r[xk] for r in d]; ys = [r[f"cpu_{al}"] for r in d]
-                pts = [(x, y) for x, y in zip(xs, ys) if x and y and np.isfinite(y) and y > 0]
-                if len(pts) >= 2:
-                    ax.plot([p[0] for p in pts], [p[1] for p in pts], marker="o", ms=4,
-                            color=color[al], label=al)
-            ax.set_xscale("log"); ax.set_yscale("log")
-            ax.set_xlabel(xl); ax.grid(alpha=0.25, which="both")
-        axes[0].set_ylabel("runtime (s)")
-        axes[0].legend(fontsize=8, frameon=False)
-        fig.suptitle("Cost laws: pivot is flat in $m$ and $|H|$ ($n$-bound); "
-                     "bestofk grows in $m$; l1sep grows in $n$ and $m$.", fontsize=9)
-        fig.tight_layout(rect=(0, 0, 1, 0.95))
-        for ext in ("pdf", "png"):
-            fig.savefig(os.path.join(a.outdir, f"fig_cost_law.{ext}"), dpi=150, bbox_inches="tight")
-        print(f"wrote {a.outdir}/fig_cost_law.pdf / .png")
+    if a.replot:
+        rows = read_csv_rows(path)
+    else:
+        N = [(n, (n, 10, 12)) for n in (150, 250, 400, 600, 900)]     # vary n; m grows; |H| fixed
+        M = [(d, (300, d, 12)) for d in (6, 10, 16, 24, 34)]          # vary m at fixed n; |H| fixed
+        H = [(c, (300, 10, c)) for c in (4, 12, 30, 70, 140)]         # vary |H| at fixed n, m
+        # H first: it is the arm that has never run, and the l1sep guard makes sweep N the slow one.
+        # Each sweep is independent (fixed seeds, per-sweep guard), so order does not affect a measurement.
+        rows = []
+        for name, pts in (("H", H), ("N", N), ("M", M)):
+            rows += run_sweep(name, pts, a.seeds, checkpoint=path, sofar=list(rows))
+        rows.sort(key=lambda r: ({"N": 0, "M": 1, "H": 2}[r["sweep"]], r["knob"]))
+        _write_csv(rows, path)
+        print(f"\nwrote {path}")
+
+    _byS, slopes = fit_slopes(rows, algos)
+    print("\n=== log-log slopes  d(log time)/d(log knob) ===")
+    print("%-12s %9s %9s %10s" % ("algo", "vs n (N)", "vs m (M)", "vs |H| (H)"))
+    for al in algos:
+        print("%-12s %9.2f %9.2f %10.2f" % (al, slopes[al]["N"], slopes[al]["M"], slopes[al]["H"]))
+    print("\nNOTE: sweep N holds degree fixed, so m rides along with n -- the n axis is NOT isolated at\n"
+          "fixed m. Only sweeps M and H isolate their knob exactly. pivot's flatness in m (sweep M) is\n"
+          "what licenses reading its sweep-N growth as an n law.")
+
+    if a.rounds:
+        rounds_probe(a.outdir)
+    if a.plot or a.replot:
+        make_figure(rows, algos, a.outdir)
 
 
 if __name__ == "__main__":
