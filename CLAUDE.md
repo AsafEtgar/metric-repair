@@ -323,6 +323,49 @@ model are independent by construction**. That is exactly the pathology that make
 awkward (coupled weights ⇒ density *is* brokenness; decoupled weights need a whole second model). The RGG
 degree sweep replaces the dense density sweep and does it better.
 
+---
+
+### The COUPLING A/B — `coupling`, added 2026-07-14, NOT YET RUN
+
+**The one experiment that can attribute the flip to the weight model, and nothing else.** Appendix A reports
+that `spc_gmr` and `pivot` **swap** between the dense grid's two sweeps (spc 0.225→0.418, pivot 0.457→0.278) —
+but `exp1` and `exp2b` differ in **n, p AND the weight model**, so the flip cannot be attributed to any of
+them. It is a caveat, not a mechanism.
+
+This array fixes that. **n fixed at 300; p fixed point-for-point; the topology distribution identical. The
+ONLY thing that changes is the weight model.** If the ranking still flips, the coupling alone did it. Nothing
+in the published campaign runs this comparison.
+
+```
+experiments/coupling_harness.py     11 alpha x 2 models x 30 seeds = 660 tasks; p = 2n^-alpha, alpha 0.2->0.7
+experiments/submit_coupling_dsq.sh  8g, 12h walltime, MAXJOBS=660; runs the preflight, refuses on failure
+experiments/collect_coupling.py     6 gates
+```
+
+Measured at preflight: the **coupled** sweep collapses from |H|/m = **0.410 → 0.0006** (a **671×** collapse,
+crossing the 3/5 metricity onset) while the **decoupled control stays broken** (0.255 → 0.093, only 2.7×).
+The two even **cross** near α = 0.25 — coupling makes the graph *more* broken than the fixed model at high
+density and *metric* at low density. **That scissors IS the effect**, and the preflight refuses to submit
+without it.
+
+**THE BUDGET IS RAISED TO 10 h, AND IT WOULD HAVE DESTROYED THE EXPERIMENT.** The small grid's `TASK_BUDGET`
+is **2 h** and the α = 0.2 rung costs ~2.25 core-h, so the budget fires — and `run_one_task` then marks the
+**remaining** algorithms `skipped_time`, walking `build_suite` in order, which ends:
+
+```
+... spc_gmr, spc_iomr, PIVOT, LEFT_EDGE
+```
+
+**`spc_gmr` and `pivot` are the two methods this array exists to compare.** Under the default budget they come
+back skipped at exactly the broken end where the coupling bites. The suite's ceiling is 9.5 h (the sum of its
+per-algorithm caps), so 10 h never binds; `collect_coupling.py` **G4 gates on `skipped_time == 0`**.
+
+**What it cannot give, stated up front:** the exact optimum dies where the coupling bites. `gmr_ilp` converges
+on ~99% below |H| = 200 and on **0% above |H| = 3,000**, and the coupled model carries |H| ≈ 11,600 at
+α = 0.2. So |S|/OPT exists only at the metric end. **That is not a design flaw — it is the dense family's own
+pathology** (Appendix A: *"the optimum exists only where there is nothing to repair"*), and this array
+**measures** it. Below the ILP's reach we report |S|/m.
+
 Figures are still copied into `figures/` by hand from `Average Metric Repair Sage/analysis/figs/`. That is the
 one remaining un-gated hop, and it has already gone stale once.
 

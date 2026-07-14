@@ -83,13 +83,26 @@ SPARSE_SWEEPS = {"inflate": ("sweep", {"S1", "S2", "S2k"}),
 DROPPED_SWEEPS = {"P2size"}          # jitter: no corruption, |H|/m = 0.004, nothing to repair
 
 # (key, family, header label, sub-label)
-GROUPS = [
+ALL_GROUPS = [
     ("dense-n", "dense", r"$n$-sweep", r"$n\!=\!1000\text{--}1500$, $p \in \{0.3, 0.5\}$"),
     ("dense-p", "dense", r"$p$-sweep", r"$n\!=\!2000$, $p\!=\!0.005\text{--}0.16$"),
     ("inflate", "sparse", r"inflate", r"$n\!=\!1000\text{--}3000$"),
     ("deflate", "sparse", r"deflate", r"$n\!=\!1000\text{--}3000$"),
 ]
+# Section 5 rests on the RGG: it is the only synthetic family with a planted corrupted set AND true weights,
+# its ILP converges on 96% of the small grid (the dense grid manages 70%/36%), and its Euclidean weights make
+# density and the weight model independent by construction. --groups rgg emits the two RGG columns only.
+# --groups all keeps the dense pair alongside, for as long as the dense family is still in the paper.
+GROUPS = [g for g in ALL_GROUPS if g[1] == "sparse"]
 GKEYS = [g[0] for g in GROUPS]
+
+
+def set_groups(which):
+    """Called from main() before anything is built. GROUPS/GKEYS are module-level because emit_tex,
+    emit_matched and the I11 dash gate all read them; rebinding here keeps them the single source."""
+    global GROUPS, GKEYS
+    GROUPS = ALL_GROUPS if which == "all" else [g for g in ALL_GROUPS if g[1] == "sparse"]
+    GKEYS = [g[0] for g in GROUPS]
 NUMCOLS = ("size", "valid", "cpu", "wall", "H", "E", "ratio_domr", "n", "knn_k")
 KEYCOLS = ("status", "valid", "size", "H", "cpu", "wall", "ratio_domr")   # must agree within a dup group
 
@@ -179,7 +192,10 @@ def split_groups(uni_by_fam):
     CSV exactly. A sweep that belongs to no group would otherwise vanish from the table without a word --
     which is precisely how 220 metric graphs ended up inside a benchmark of repair algorithms."""
     out, sizes = {}, {}
+    want = {g[1] for g in GROUPS}          # only the families the selected groups need
     for fam, spec in (("dense", DENSE_SWEEPS), ("sparse", SPARSE_SWEEPS)):
+        if fam not in want:
+            continue
         d = uni_by_fam[fam]
         seen = set()
         for key, (col, vals) in spec.items():
@@ -438,44 +454,53 @@ def emit_tex(gstats, gsizes, cover, bound, gunis):
     """
     ghm = {k: fam_hm(gunis[k]) for k in GKEYS}
 
-    cap = (r"\caption{\textbf{The corruption decides -- and so does the sweep.} \textbf{$|S|/m$, the share of "
-           r"the graph the repair rewrites, is the axis} here and throughout. Medians over runs that returned "
-           r"\emph{and} verified. \textbf{There is no pooled column, because a pooled median is not a "
-           r"statistic of anything:} \code{l1sep\_gmr} loses to \code{spc\_gmr} on $100\%%$ of inflate "
-           r"instances and beats it on $100\%%$ of deflate instances, so any average over both reports only "
-           r"the mixing ratio. The four groups are the four sweeps the campaign actually ran (%s tasks; a "
-           r"fifth, a jitter sweep with no corruption and $|H|/m = 0.004$, is excluded --- graphs that are "
-           r"already metric cannot benchmark a repair): the dense $n$-sweep ($n = 1000\text{--}1500$, "
-           r"$p \in \{0.3, 0.5\}$, weights $\mathrm{Geom}(1-p)$); the dense $p$-sweep ($n = 2000$, "
-           r"$p = 2n^{-\alpha}$ for $\alpha = 4/5 \to 1/3$, with the weight distribution held \emph{fixed} at "
-           r"$\mathrm{Geom}(0.5)$ so that density alone moves); and the two planted RGG corruptions "
-           r"($n = 1000\text{--}3000$). "
-           r"\DOMR{} is the reference: its cover \emph{is} $H$, so "
-           r"its row \emph{is} $|H|/m$, the non-metric fraction each group carries. \textbf{Bold marks the "
-           r"best and two worst within each variant and group} --- never across either. $\dagger$: this "
-           r"method survived a markedly cleaner (or more broken) slice of its group than the others, so its "
-           r"median is not comparable with the unmarked rows; such rows, and those returning under $%d\%%$, "
-           r"cannot be bolded. A dash is no verified cover. The %d LP relaxations (%s) return a bound, not a "
-           r"cover.}"
-           % (" + ".join(_n(gsizes[k]) for k in GKEYS), int(100 * MARK_MIN_RET),
-              len(bound), ", ".join(a(x) for x in bound)))
+    # SHORT, and ONE COLUMN. The table is narrow -- an algorithm name and two (ret., |S|/m) pairs -- so it has
+    # no business spanning the page. Everything the caption used to argue (why there is no pooled column, what
+    # each sweep is, why the dagger exists) is the SECTION's job; what stays is only what the reader needs to
+    # read a row.
+    cap = (r"\caption{\textbf{The corruption decides.} $|S|/m$ --- the share of the graph the repair rewrites "
+           r"--- per direction, over runs that returned \emph{and} verified; \emph{ret.} is how often a "
+           r"verified cover came back at all (%s tasks). \DOMR{}'s row \emph{is} $|H|/m$. Bold: best and two "
+           r"worst \emph{within} each variant and direction. $\dagger$: survived a markedly different slice of "
+           r"its group, so not comparable with the unmarked rows. A dash is no cover. \textbf{There is no "
+           r"pooled column: an average over the two directions reports the mixing ratio, not the methods.}}"
+           % " + ".join(_n(gsizes[k]) for k in GKEYS))
 
     ncol = 1 + 2 * len(GKEYS)
     colspec = "@{}l" + "".join("rr" if i == 0 else "@{\\quad}rr" for i in range(len(GKEYS))) + "@{}"
+    # BOTH header rows are DERIVED from GROUPS. They used to be hardcoded for the four-group layout, and
+    # under --groups rgg that emitted a 9-column header over a 5-column tabular: the paper did not compile.
+    # A header that does not follow the columns it labels is not a header.
+    FAMLAB = {"dense": r"dense $\Gamma(n,p)$", "sparse": r"sparse geometric (RGG)"}
+    fam_head, fam_rules, c = [], [], 2
+    for fam in dict.fromkeys(g[1] for g in GROUPS):                # families, in GROUPS order, deduped
+        k = sum(1 for g in GROUPS if g[1] == fam)                  # how many groups this family carries
+        fam_head.append(r"\multicolumn{%d}{c}{%s}" % (2 * k, FAMLAB[fam]))
+        fam_rules.append(r"\cmidrule(lr){%d-%d}" % (c, c + 2 * k - 1)); c += 2 * k
     head1, head2, rules, c = [], [], [], 2
     for key, famname, lab, sub in GROUPS:
         head1.append(r"\multicolumn{2}{c}{%s}" % lab)
         head2 += [r"ret.", r"$|S|/m$"]
         rules.append(r"\cmidrule(lr){%d-%d}" % (c, c + 1)); c += 2
+    # ONE COLUMN when the group set fits (the RGG pair does; the four-group layout does not). The tabular is
+    # wrapped in \resizebox so it shrinks to the column rather than overflowing it -- the numbers stay
+    # readable at this width, and a table this narrow has no business spanning the page.
+    onecol = len(GKEYS) <= 2
+    env = "table" if onecol else "table*"
+    width = r"\columnwidth" if onecol else r"\textwidth"
     out = [r"% GENERATED by experiments/inversion_table.py -- DO NOT EDIT, DO NOT TRANSCRIBE. Regenerate.",
-           r"\begin{table*}[t]\centering\small", cap, r"\label{tab:invert}",
-           r"\begin{tabular}{%s}" % colspec, r"\toprule",
-           r" & \multicolumn{4}{c}{dense $\Gamma(n,p)$} & \multicolumn{4}{c}{sparse geometric (RGG)} \\",
-           r"\cmidrule(lr){2-5}\cmidrule(l){6-9}",
-           " & ".join([""] + head1) + r" \\",
-           " ".join(rules),
-           " & ".join(["algorithm"] + head2) + r" \\",
-           r"\midrule"]
+           r"\begin{%s}[t]\centering\footnotesize" % env, cap, r"\label{tab:invert}",
+           r"\resizebox{%s}{!}{%%" % width,
+           r"\begin{tabular}{%s}" % colspec, r"\toprule"]
+    # The family header row exists to separate dense from sparse. With ONE family it separates nothing --
+    # it is a banner over the whole table saying what the caption already said. Drop it, and the rule under
+    # it, rather than spend two rows of a one-column float on a tautology.
+    if len(set(g[1] for g in GROUPS)) > 1:
+        out += [" & ".join([""] + fam_head) + r" \\", " ".join(fam_rules)]
+    out += [" & ".join([""] + head1) + r" \\",
+            " ".join(rules),
+            " & ".join(["algorithm"] + head2) + r" \\",
+            r"\midrule"]
     # NO sub-label row. It ran the full width of the table* and overflowed the page; the group definitions
     # belong in the caption, where they cost nothing.
 
@@ -536,7 +561,7 @@ def emit_tex(gstats, gsizes, cover, bound, gunis):
                         sm = r"$%.3f^{\dagger}$" % r.sm_med
                 cells.append(sm)
             out.append(" & ".join(cells) + r" \\")
-    out += [r"\bottomrule", r"\end{tabular}", r"\end{table*}"]
+    out += [r"\bottomrule", r"\end{tabular}", r"}", r"\end{%s}" % env]
     return "\n".join(out)
 
 
@@ -903,6 +928,9 @@ def main():
     ap.add_argument("--sparse", default=SPARSE_CSV)
     ap.add_argument("--costlaw", default="analysis/cost_law.csv")
     ap.add_argument("--edit", default="analysis/rgg/rgg_rows_with_ratio.csv")
+    ap.add_argument("--groups", default="rgg", choices=["rgg", "all"],
+                    help="rgg = the two RGG columns only (Section 5 rests on the RGG); "
+                         "all = keep the dense pair alongside")
     # Write the two generated .tex STRAIGHT into the paper directory, wherever that lives. The alternative --
     # emit into analysis/ and copy them next to the paper by hand -- is a step that rots the moment the paper
     # moves, and it rots SILENTLY: LaTeX happily compiles a stale table. Point this at the directory holding
@@ -911,6 +939,7 @@ def main():
                     help="the paper's tables/ directory. tab_invert.tex and inversion_macros.tex "
                          "are written here as well as to --outdir.")
     args = ap.parse_args()
+    set_groups(args.groups)
 
     raw = {"dense": load(args.dense, "dense"), "sparse": load(args.sparse, "sparse")}
     truth = {f: grid_truth(f) for f in FAMILIES}
@@ -922,7 +951,7 @@ def main():
 
     # THE FOUR GROUPS. The pooled `stats` above stay only to feed the gate (which checks the CSV against the
     # harness grid, and the grid is per-CSV) and the deprecated pooled macros. The TABLE is built from these.
-    print("\nSPLITTING THE TWO CSVs INTO THE FOUR GROUPS (see the GROUPS note at the top of this file)")
+    print("\nSPLITTING INTO GROUPS (see the GROUPS note at the top of this file)")
     gunis, gsizes = split_groups(uni)
     gstats = {k: per_algo(gunis[k], gsizes[k]) for k in GKEYS}
     for k in GKEYS:
