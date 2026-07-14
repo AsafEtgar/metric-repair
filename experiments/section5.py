@@ -190,11 +190,24 @@ def gate(S, L):
         bad = int((D["size"] != D.H).sum())
         chk(len(D) > 0 and bad == 0, f"G1 domr's cover IS H ({lab})", f"{len(D)} tasks, {bad} mismatches")
 
-    # G2  THE ASYMMETRY, FIXED BY THEORY. Under inflation an inflated edge exceeds its own detour, so it IS
-    #     heavy: H = B exactly, and OPT_GMR = |H|. Under deflation a shortcut is SHORTER than its detour, so
-    #     it is NOT heavy: H cannot contain it and holds the victims instead, so |H| > |B| and OPT_GMR < |H|.
-    #     Both halves are checked. Neither can pass vacuously -- they are computed from the planted set.
-    T = S.drop_duplicates("task").set_index("task")[["H", "E", "direction", "n_corrupted"]]
+    # G2  THE ASYMMETRY, FIXED BY THEORY -- and stated as INVARIANTS, not as an exact identity.
+    #
+    #     Under inflation a raised edge exceeds its own detour, so it is heavy; and raising an edge only
+    #     LENGTHENS other edges' detours, so it can never make a DIFFERENT edge heavy. Hence H is always a
+    #     SUBSET of the planted set B: OPT_GMR <= |H| <= |B|. That is the invariant, it holds at every
+    #     magnitude, and it is what we gate.
+    #
+    #     H == B is NOT an identity, and the earlier gate that asserted it (|H|/|B| within 0.02 of 1.0) was
+    #     an artefact of the OLD corruption: a broken additive floor pinned every inflation to ~11.8x the
+    #     detour, so nothing could ever be un-broken. Under the corrected corruption a WEAK inflation does not
+    #     survive its own interference -- when a raised edge's detour runs through another raised edge, that
+    #     detour grew and the edge is no longer heavy -- so |H| < |B|, and the more edges are planted the more
+    #     it falls. We REPORT that magnitude- and fraction-dependence; we do not fail on it.
+    #
+    #     The consequence for DOMR is exact and worth stating: since H subset B, DOMR's cover has PRECISION
+    #     1.000 (every heavy edge is a real culprit) and RECALL |H|/|B| (it misses the un-broken ones).
+    T = S.drop_duplicates("task").set_index("task")[
+        ["H", "E", "direction", "n_corrupted", "magnitude", "frac_q", "deg"]]
     ilp = ok(S)[ok(S).algo.eq("gmr_ilp")].dropna(subset=["size"])
     j = T.loc[ilp.task.unique()].copy()
     j["opt"] = ilp.set_index("task")["size"]
@@ -202,10 +215,22 @@ def gate(S, L):
     for dr, g in j.groupby("direction"):
         R[dr] = dict(opt_over_H=float((g.opt / g.H).median()),
                      H_over_B=float((g.H / g.n_corrupted).median()), n=len(g))
-    chk(abs(R["inflate"]["opt_over_H"] - 1.0) < 0.02 and abs(R["inflate"]["H_over_B"] - 1.0) < 0.02,
-        "G2a inflate: H == B == the GMR optimum",
-        f"OPT/|H| = {R['inflate']['opt_over_H']:.3f}, |H|/|B| = {R['inflate']['H_over_B']:.2f} "
-        f"({R['inflate']['n']} tasks)")
+
+    # gate the INVARIANT (subset), which correct data satisfies at any magnitude; report the recall.
+    #
+    # TWO POPULATIONS, DELIBERATELY. The subset bound |H| <= |B| and the recall are properties of the
+    # CORRUPTION and hold on EVERY inflate task, so they use ALL of them (T_inf). The OPT/|H| bound needs the
+    # GMR optimum, so it uses only the ILP-converged tasks (inf). Mixing them would be a survivorship trap:
+    # the frac-0.30 tasks that break H == B are the hardest, hence the likeliest to time the ILP out -- so
+    # measuring recall on the ILP-converged subset would HIDE the interference the report exists to show.
+    T_inf = T[T.direction.eq("inflate")].dropna(subset=["H", "n_corrupted"])
+    inf = j[j.direction.eq("inflate")]
+    max_hb = float((T_inf.H / T_inf.n_corrupted).max())
+    max_oh = float((inf.opt / inf.H).max())
+    chk(max_hb <= 1.02 and max_oh <= 1.02,
+        "G2a inflate: OPT_GMR <= |H| <= |B|  (H is a SUBSET of the planted set)",
+        f"max |H|/|B| = {max_hb:.3f} over {len(T_inf)} tasks, max OPT/|H| = {max_oh:.3f} over {len(inf)} "
+        f"ILP-converged (median recall {R['inflate']['H_over_B']:.3f})")
     chk(R["deflate"]["opt_over_H"] < 0.5 and R["deflate"]["H_over_B"] > 2.0,
         "G2b deflate: H is the VICTIMS, not the culprits",
         f"OPT/|H| = {R['deflate']['opt_over_H']:.3f}, |H|/|B| = {R['deflate']['H_over_B']:.2f} "
@@ -215,6 +240,30 @@ def gate(S, L):
     chk(abs(R["deflate"]["opt_over_H"] - inv) < 0.06,
         "G2c the two deflate numbers are one fact (OPT/|H| ~ |B|/|H|)",
         f"{R['deflate']['opt_over_H']:.3f} vs 1/{R['deflate']['H_over_B']:.2f} = {inv:.3f}")
+
+    # REPORT (not a gate): how DOMR's recall under inflation depends on the two corruption knobs. H == B is a
+    # LIMIT as the inflation grows, not an identity, and the fraction drives the interference that breaks it.
+    # This is the number the NMR/edges prose needs -- "DOMR recovers the corrupted set exactly" is only true
+    # at high magnitude and low fraction, and the paper must say so.
+    # NB: never name a column "eq" -- `Series.eq`/`DataFrame.eq` is the elementwise-equality METHOD, so
+    # attribute access returns the method and `.eq.mean()` / f"{row.eq}" is a runtime AttributeError, not an
+    # import error. Use "hxb" (H eXactly B) and bracket-access.
+    inf_eq = T_inf.assign(hxb=(T_inf.H == T_inf.n_corrupted), rec=T_inf.H / T_inf.n_corrupted)
+    B = inf_eq[inf_eq.magnitude.eq(BASE_MAG) & inf_eq.frac_q.eq(BASE_FRAC) & inf_eq.deg.eq(BASE_DEG)]
+    R["inflate"]["base_recall"] = float(B["rec"].mean()) if len(B) else float("nan")
+    R["inflate"]["base_exact"] = float(B["hxb"].mean()) if len(B) else float("nan")
+    print(f"  ---- DOMR recall under inflation (precision is 1.000 by the subset property) ----")
+    print(f"       at the baseline (mu={BASE_MAG}, frac={BASE_FRAC}, deg={BASE_DEG}): "
+          f"mean recall {R['inflate']['base_recall']:.3f}, exact H==B on {R['inflate']['base_exact']:.3f} "
+          f"of {len(B)} tasks")
+    by_mu = inf_eq.groupby("magnitude").agg(rec=("rec", "mean"), hxb=("hxb", "mean"), n=("rec", "size"))
+    print(f"       recall by magnitude:  " + "  ".join(f"mu{m}:{r['rec']:.3f}" for m, r in by_mu.iterrows()))
+    by_q = (inf_eq[inf_eq.magnitude.eq(BASE_MAG)].groupby("frac_q")
+            .agg(rec=("rec", "mean"), hxb=("hxb", "mean"), n=("rec", "size")))
+    print(f"       recall by fraction (mu={BASE_MAG}):  "
+          + "  ".join(f"q{q}:{r['rec']:.3f}" for q, r in by_q.iterrows()))
+    print(f"       exact H==B by fraction (mu={BASE_MAG}):  "
+          + "  ".join(f"q{q}:{r['hxb']:.3f}" for q, r in by_q.iterrows()))
 
     # G3  THE REVERSAL. The section's spine. If l1sep and spc ever stop swapping ends between the two
     #     directions, there is no inversion to report and the prose must not claim one. ANTI-VACUITY: this
@@ -230,9 +279,10 @@ def gate(S, L):
         f"{a}: {p.loc[a,'inflate']:.2f} -> {p.loc[a,'deflate']:.2f}   "
         f"{b}: {p.loc[b,'inflate']:.2f} -> {p.loc[b,'deflate']:.2f}")
 
-    # G3b  UNDER INFLATION, EVERY METHOD EDITS MORE THAN THE HEAVY SET. H is the optimum there (G2a), so a
-    #      method above that line is strictly worse than one all-pairs pass. The prose claims "every"; if it
-    #      ever stops being every, this fails and the word has to change.
+    # G3b  UNDER INFLATION, EVERY METHOD EDITS MORE THAN THE HEAVY SET. H is a lower bound on the GMR optimum
+    #      there (OPT_GMR <= |H|, G2a), so any method whose median cover exceeds |H| is strictly worse than one
+    #      all-pairs pass. The prose claims "every"; if it ever stops being every, this fails and the word has
+    #      to change. (This compares |S|/m medians directly and does not depend on H == B.)
     K = ok(L)[ok(L).sweep.eq("S1")]
     hm = K[K.algo.eq("domr")].sm.median()
     algos = [a for a in K.algo.unique() if a != "domr"]
@@ -669,6 +719,9 @@ def emit_macros(S, L, R, p, dirs, nt, st, lands):
         mac(d.title() + "Tasks", _n(nt[d]))
         mac(d.title() + "OptOverH", "%.3f" % R[d]["opt_over_H"])
         mac(d.title() + "HOverB", "%.2f" % R[d]["H_over_B"])
+    # DOMR's recall under inflation at the baseline -- H == B is a limit, not an identity (see G2a).
+    mac("InflateRecall", "%.1f" % (100 * R["inflate"].get("base_recall", float("nan"))))
+    mac("InflateExact", "%.1f" % (100 * R["inflate"].get("base_exact", float("nan"))))
     # the |S|/OPT numbers the prose names
     for a in ("l1sep_gmr", "spc_gmr", "pivot", "left_edge", "l1sep_iomr"):
         if a in p.index:

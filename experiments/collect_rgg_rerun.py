@@ -113,7 +113,9 @@ def gate(D):
     else:
         cut = (ok(S)[ok(S).sweep.eq("S3") & ok(S).algo.eq("l1sep_gmr")]
                .groupby("magnitude").cuts.median().sort_index())
-        eq = s3.assign(eq=(s3.H == s3.n_corrupted)).groupby("magnitude").eq.mean().sort_index()
+        # bracket access, NOT .eq -- `eq` is a DataFrame/GroupBy method, so `.eq` returns the method and
+        # `.eq.mean()` is an AttributeError. This exact collision crashed an earlier build of G7.
+        eq = s3.assign(heq=(s3.H == s3.n_corrupted)).groupby("magnitude")["heq"].mean().sort_index()
         rise_c = cut.iloc[-1] / max(cut.iloc[0], 1) if len(cut) > 1 else float("nan")
         rise_e = eq.iloc[-1] - eq.iloc[0] if len(eq) > 1 else float("nan")
         live = rise_c > 3.0 and rise_e > 0.5
@@ -147,27 +149,33 @@ def gate(D):
     #     Report it on BOTH axes, and gate it at the ONE point the paper's claims are made at.
     T = allrows.drop_duplicates("task")
     inf = T[T.direction.eq("inflate")].dropna(subset=["H", "n_corrupted"]).copy()
-    inf["eq"] = inf.H == inf.n_corrupted
+    # Column names that DO NOT collide with a pandas method: `df.eq` is DataFrame.eq (elementwise equality),
+    # so a column literally named "eq" is unreachable by attribute and `.eq.mean()` is an AttributeError that
+    # crashes at runtime, not at import. Use "heq"/"hb" and bracket-access throughout.
+    inf["heq"] = inf.H == inf.n_corrupted
     inf["hb"] = inf.H / inf.n_corrupted.where(inf.n_corrupted > 0)
 
     base = inf[inf.magnitude.eq(BASE_MAG) & inf.frac_q.eq(BASE_FRAC)
                & inf.deg.eq(BASE_DEG) & inf["mode"].eq("radius")]
-    b_eq = float(base.eq.mean()) if len(base) else float("nan")
-    b_hb = float(base.hb.median()) if len(base) else float("nan")
+    b_eq = float(base["heq"].mean()) if len(base) else float("nan")
+    b_hb = float(base["hb"].median()) if len(base) else float("nan")
     chk(len(base) > 0 and b_hb > 0.95,
         f"G7 inflate at the BASELINE: H is (almost) B  (mu={BASE_MAG}, frac={BASE_FRAC}, deg={BASE_DEG})",
         f"{len(base)} tasks: H==B exactly on {b_eq:.3f}, and |H|/|B| median {b_hb:.4f}"
         if len(base) else "no baseline rows")
 
+    # Report BOTH the exact-H==B fraction AND the MEAN |H|/|B| (= DOMR's recall). The MEDIAN |H|/|B| is
+    # useless here: it stays 1.0000 until exact-H==B drops below 50%, because a shortfall is 1-2 edges out of
+    # ~50. The mean is what moves, and it is the recall number the prose needs.
     print("\n  H == B under inflation. It is NOT a grid-wide identity, and it depends on BOTH knobs:")
-    print(f"    {'magnitude':>10}{'tasks':>8}{'H == B':>9}{'|H|/|B|':>10}")
+    print(f"    {'magnitude':>10}{'tasks':>8}{'exact H==B':>12}{'mean recall':>13}")
     for m, g in inf.groupby("magnitude"):
-        print(f"    {m:>10}{len(g):>8}{g.eq.mean():>9.3f}{g.hb.median():>10.4f}")
+        print(f"    {m:>10}{len(g):>8}{g['heq'].mean():>12.3f}{g['hb'].mean():>13.4f}")
     print(f"\n  ...and at the baseline magnitude {BASE_MAG}, sliced by the FRACTION (this is what the pooled")
     print("     number was hiding -- more planted edges means more interference):")
-    print(f"    {'frac_q':>8}{'tasks':>8}{'H == B':>9}{'|H|/|B|':>10}")
+    print(f"    {'frac_q':>8}{'tasks':>8}{'exact H==B':>12}{'mean recall':>13}")
     for q, g in inf[inf.magnitude.eq(BASE_MAG)].groupby("frac_q"):
-        print(f"    {q:>8}{len(g):>8}{g.eq.mean():>9.3f}{g.hb.median():>10.4f}")
+        print(f"    {q:>8}{len(g):>8}{g['heq'].mean():>12.3f}{g['hb'].mean():>13.4f}")
     print("\n  H is always a SUBSET of B here (inflating an edge cannot make a DIFFERENT edge heavy -- it")
     print("  only lengthens other edges' detours). So DOMR's precision stays 1.000; what falls is its RECALL.")
     return fails
