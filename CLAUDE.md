@@ -80,12 +80,175 @@ substitution is a unit error, and the "ceiling" is circular.
 
 ## Files
 
-- **`overleaf_report/ALENEX/story.tex`** — **write from this.** Two-column SIAM, 10-page target. Complete
-  introduction + abstract; every other section is a header plus bullets (blue `plan` env). NMR section is
-  fully written.
-- `overleaf_report/ALENEX/alenex.tex` — earlier fuller draft; a parts bin. Blue `\F{}` = filled from data.
-- `overleaf_report/paper_plan.tex` — float budget + appendices. Not the submission.
-- `overleaf_report/practice.tex` — the 54-page technical report. Keep.
+**THE PAPER NO LONGER LIVES IN THIS TREE.** As of 2026-07-13 it moved out of `overleaf_report/` and into the
+Overleaf–Dropbox sync folder, where it is a live Overleaf project:
+
+```
+PAPER="/Users/asaf/Library/CloudStorage/Dropbox/Apps/Overleaf/Metric Repair in The Wild"
+```
+
+Everything in it edits *in place* and syncs to Overleaf on save. The old `overleaf_report/` is gone (it is in
+`~/.Trash/overleaf_report_moved_20260713-163552` if anything was missed). Paths below are relative to `$PAPER`.
+
+**RESTRUCTURED 2026-07-14. `ALENEX/` IS GONE.** The submission is now the paper root, and everything that is
+not the submission lives in `buildup/`. The root *is* the ALENEX paper:
+
+```
+$PAPER/
+  story.tex            <- THE MAIN FILE. Compile this. 7pp today; 10pp is the cap.
+  intro.tex  set_up.tex  benchmarks.tex  weights.tex     <- the section bodies
+  siamproceedings.sty  siamplain.bst  example_references.bib
+  figures/             <- 159 figures. \graphicspath{{figures/}}
+  tables/              <- ALL generated LaTeX. \input{tables/tab_x}
+  buildup/             <- everything else; each doc still compiles
+```
+
+- **`story.tex`** — **write from this.** Two-column SIAM. Complete introduction + abstract; most sections are
+  a header plus bullets (blue `plan` env). NMR section is fully written. `\input{benchmarks.tex}` is
+  **currently commented out** (line 85) — the old `sec_edges.tex` was folded into it. Ask before re-enabling.
+- **`weights.tex` is EMPTY (0 bytes).** That is §6, "What weights?" — the title's second half, and the
+  biggest unwritten thing in the paper.
+- `tables/` — the six generated tables **plus `inversion_macros.tex`**. One rule: **everything generated
+  lives in `tables/`.** The generators enforce it (see below).
+- `buildup/` — `practice.tex` (54pp report), `paper_plan.tex` (float budget + the four `app_*.tex`),
+  `experimental_design.tex`, `alenex.tex` (earlier draft, a parts bin; blue `\F{}` = filled from data), the
+  `tab_plan_*`/`tab_*recovery` tables those two use, `archive/`, the `_check_*.py` one-off verifiers, and the
+  `.md` notes. All four top-level docs compile **from inside `buildup/`** (54 / 26 / 13 / 8 pp, 0 errors).
+  They reach the figures with `\graphicspath{{../figures/}}`; `alenex.tex` has its own copies of the `.sty`
+  and `.bst`.
+
+`figures/` and `tables/` must stay **siblings of `story.tex`** at the paper root. Everything resolves off
+that, including `buildup/` one level down.
+
+**CAPTIONS ARE SHORT, AND THE AUTHOR EDITS THEM.** Settled 2026-07-14 — it is his stated preference, and the
+generators now obey it. The first pass emitted ~2,000-character captions that argued the methodology inside
+the float; he commented them out by hand (they cost a page of a ten-page limit), and a regeneration then
+silently destroyed those edits. All five captions were cut on 2026-07-14 (9,273 → 4,791 chars, −48%), and
+`story.tex` holds at 7pp with them **active**.
+
+A generated caption is now: **bold lead + how to read the table + the one headline number.** Two or three
+sentences, then stop. The median convention, the best-not-median argument, the DOMR control, the recall
+cliff — all of that is the **section prose's** job. Two things never get cut for brevity:
+- **Numbers stay DERIVED.** Shortening is never a licence to type a value into a caption string.
+- **A disclosure the table would be dishonest without stays** — but terse. `pbmc3k` k-NN at k ≤ 15 is
+  tautological; `dimacs_ny_d` medians are over survivors; `nmr_atom`'s truth covers 343 of 430 nodes.
+
+The caption still lives in the generated `.tex`, so regenerating still overwrites a hand-edit — short captions
+just make that a 30-second re-do instead of a lost page.
+
+---
+
+## THE SKELETON — agreed 2026-07-13. Build to this.
+
+The author set this structure. **Do not silently reorganise it.** The one amendment on top of his draft
+(which he accepted) is splitting weights from downstream — see §6/§7.
+
+| § | content | floats |
+|---|---|---|
+| 1 | Introduction | — |
+| 2 | **Preliminaries — and BOTH lemmas live here**, stated once, attributed to Simas et al., then *used* by §5 (the DOMR control), §6 (the cross) and §7 (the inflation corollary). Do not introduce theory mid-results. | — |
+| 3 | Related work — one problem, three communities | — |
+| 4 | **Setup.** The algorithms (**be surgical about which are NEW** — see the trap below), the synthetic families and their breakage, the real datasets. | `tab_datasets` |
+| 5 | **Benchmarking.** Accuracy, CPU/wall time, **the ranking flips**. | `tab_invert`, `fig:invert` |
+| 6 | **What weights?** The corollary, the 2×2 set×correction cross, "the value is in the weights." **This is the title's second half and it gets its own section.** | `tab_cross` |
+| 7 | **What repair buys downstream.** The corruption decides; the hope answered; the oracle lies. | `tab_corruption`, `tab_hope` |
+| 8 | **NMR — the crescendo, not an epilogue.** captured ≈ \|S\|/m at r = 0.945; no SMALL set works; sparsity and recovery are in direct opposition. | oracle table + MDS figures |
+| 9 | Conclusion — the open problem (certified / recovering / oblivious) | — |
+| A+ | Appendices. **The dataset × algorithm grid goes HERE** (19 × 21 ≈ 400 cells — it would eat a page of the main text and nobody would read it). | |
+
+**Why §6 and §7 are separate.** The title is *"Metric Repair Is Two Problems: Which Edges, and What
+Weights."* If "what weights" is one bullet inside a section that also carries the downstream probes, the
+title promises a symmetry the body does not have. They are also two different claims: §6 says **the repair
+rule is wrong**; §7 asks **whether repair buys anything at all**. Answering the first does not discharge the
+second.
+
+**Two open risks, flagged and not yet closed:**
+1. **Which algorithms are claimed as NEW.** This is the sentence a referee hunts. `DOMR` is **not** ours (see
+   PRIOR ART above). Check `spc`, `l1sep` and `bestofk` against the literature before claiming any of them.
+2. **Float budget.** Six tables plus NMR figures in ten pages will bind. The §6/§7 split spreads them; the
+   dataset × algorithm grid must stay in the appendix.
+
+---
+
+### Generated LaTeX — never hand-edit, never transcribe
+
+**Five gated generators** in `Average Metric Repair Sage/experiments/` (all new, all untracked/uncommitted).
+Run each from `Average Metric Repair Sage/`:
+
+```
+PAPER="/Users/asaf/Library/CloudStorage/Dropbox/Apps/Overleaf/Metric Repair in The Wild"
+
+sage -python experiments/inversion_table.py  --texdir "$PAPER/tables"    # tab_invert + inversion_macros
+sage -python experiments/cross_table.py      --texdir "$PAPER/tables"    # tab_cross      (§6)
+sage -python experiments/corruption_table.py --texdir "$PAPER/tables"    # tab_corruption (§7)
+sage -python experiments/hope_table.py       --texdir "$PAPER/tables"    # tab_hope       (§7)
+sage -python experiments/datasets_table.py   --texdir "$PAPER/tables"    # tab_datasets   (§4, one column)
+```
+
+**All five now take the same `--texdir "$PAPER/tables"`.** Every one **gates before it writes** and refuses to
+overwrite on failure, leaving the previous `.tex` intact rather than giving the paper untrustworthy numbers.
+
+`paper_dir()` — the same function in all five — locates `story.tex` and accepts **only** the directory holding
+it or that directory's `tables/`. It refuses `$PAPER/figures`, `$PAPER/buildup`, and anything outside the
+paper. Before 2026-07-14 it accepted any sibling of a directory containing `story.tex`, which meant
+`--texdir "$PAPER/figures"` would have silently dumped a table into the figures folder — the exact rot the
+gate exists to stop. **Captions are short by design and the author edits them — see the Files section.**
+
+**Why they exist.** The last hand-computed table shipped a **wrong number**: `l1sep_iomr`'s sparse return rate
+printed as 100.0% when it is 99.7% — the hand pass filtered on `status` while the caption promised "returned
+*and* verified." If a number needs to change, **regenerate; do not retype.**
+
+**The gates that earn their keep** (each can genuinely fail; each has):
+- **DOMR is an exact control.** By the decrease-only lemma it changes no shortest path, so it must move
+  neither downstream axis. Measured: 4e-16 disparity, exactly 0 on k-NN. A nonzero reading is a bug.
+- **Provenance by rebuild.** `cross_table.py` regenerates the seeded planted instance and requires its \|B\|
+  to match the CSV's oracle row — the only check that catches a *stale* CSV.
+- **The no-op identity.** A cover holding none of the corrupted edges cannot be helped by the true weights,
+  so its disparity must equal the observed one *exactly*.
+
+**One editorial column is NOT a measurement** and the code says so: `tab_datasets`' "does a standard tool need
+a metric?" is a judgement about six literatures, curated in `VERDICT`. The gate polices its *scope* (every
+graph has a verdict; every verdict names a real graph), never its truth.
+
+---
+
+### The COUPLED density sweep — `exp2c`, added 2026-07-14, NOT YET RUN
+
+The large dense grid never varied density under **coupled** weights: `exp1` (coupled) pins p at {0.3, 0.5},
+and only `exp2b` (decoupled) sweeps it. So every density statement the paper makes at scale is a statement
+about the *decoupled* model. This array fills the gap.
+
+```
+experiments/coupled_harness.py     the array  (n=2000, p = 2n^-alpha, alpha 0.500 -> 0.229, 16 pts x 20 seeds)
+experiments/submit_coupled_dsq.sh  build joblist + dSQ batch; RUNS THE PREFLIGHT and refuses to submit if it fails
+experiments/collect_coupled.py     5 gates, all able to fail
+```
+
+**`harness.py` is imported READ-ONLY.** The array carries its own grid and its own runner, reusing the
+harness's generator, suite, isolation, cap and `CSV_FIELDS` verbatim — the rows are schema-identical to the
+campaign's, which is the whole point. Never add a grid to `harness.py`; it would invalidate 11,965 tasks.
+
+**THE TRAP THIS ARRAY ALMOST FELL INTO, and the gate that stops it.** Under coupling the weights are
+Geometric(1−p), so the mean weight is **1/(1−p)**: *density IS the weight spread*. At small p the weights
+collapse onto 1, and an all-ones graph is metric by construction. The obvious mirror of `exp2a`
+(α ∈ [1/2, 2/3]) therefore puts **every** point at |H|/m ≤ 0.003 — 320 tasks and ~800 core-hours to
+benchmark repair algorithms on graphs with **nothing to repair**, producing a table of zeros that would read
+as a finding. `--preflight` builds every grid point for real, measures |H|/m, and **refuses to submit** unless
+the sweep actually breaks. Run it; it is not optional. (Measured: α 0.500 → 0.229 gives |H|/m 0.0020 → 0.1233,
+m 90k → 701k. The sparse end being near-metric is the **onset**, and it is the result.)
+
+**Two `bestofk` methods are NOT run.** They time out on 100% of `exp2b`'s tasks — 1800 s each, every task,
+zero data, **38% of the whole budget**. Dropping them is not free: it **forfeits** their return-rate cells
+rather than measuring them at 0%, and a return rate is only comparable across sweeps at an equal cap. Their
+cells are **absent, not zero**, and `collect_coupled.py` G5 says so out loud. Everything else runs at the same
+1800 s cap as `exp1`/`exp2b`, so every other cell IS comparable.
+
+Resources: 24g (exp1 ran 563k edges in 16g; this reaches 701k), 8 h walltime — the per-task budget is
+`task_budget("large") = 6 h` and **must stay under the walltime or the CSV is lost outright**
+(`harness.py:56`). `MAXJOBS=320`: the array is embarrassingly parallel and only 320 wide.
+
+Figures are still copied into `figures/` by hand from `Average Metric Repair Sage/analysis/figs/`. That is the
+one remaining un-gated hop, and it has already gone stale once.
 
 Every number traces to a gated script in `Average Metric Repair Sage/experiments/`. **Nothing is transcribed
 by hand — keep it that way.**
