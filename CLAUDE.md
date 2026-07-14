@@ -247,6 +247,55 @@ Resources: 24g (exp1 ran 563k edges in 16g; this reaches 701k), 8 h walltime —
 `task_budget("large") = 6 h` and **must stay under the walltime or the CSV is lost outright**
 (`harness.py:56`). `MAXJOBS=320`: the array is embarrassingly parallel and only 320 wide.
 
+**HOLD `exp2c` if the dense family is demoted.** It is a *dense-family* experiment. As of 2026-07-14 the
+author is considering dropping the dense family and resting the benchmark on the RGG. If that happens, do not
+submit it — nothing is lost, the code and the preflight keep.
+
+---
+
+### The RGG SCALE array — `rgg_scale`, added 2026-07-14, NOT YET RUN
+
+The benchmark section's candidate spine: the sparse family pushed to **n = 5000** in **both** corruption
+directions, with fraction and magnitude swept in both directions, and the jitter sweep dropped.
+**70 points × 30 seeds = 2,100 tasks, ~4,700 core-hours.**
+
+```
+experiments/rgg_scale_harness.py     the array   (n=1000..5000 step 200; S1/S1d/S2/S2k/P2df/P2dm/P2if/P2im)
+experiments/submit_rgg_scale_dsq.sh  16g, 12h walltime, MAXJOBS=2100; runs the preflight, refuses on failure
+experiments/collect_rgg_scale.py     6 gates
+```
+
+`rgg_harness.py` is imported **read-only**. `_run()` already takes `budget` as a parameter, so the raise below
+costs no edit.
+
+**THE BUDGET IS RAISED TO 9 h, AND IT IS NOT A TUNING KNOB.** The section wants to claim that algorithms hit
+their limits even on a sparse family. That claim is only worth making if a timeout is an *algorithmic* fact.
+It would not have been. The harness's per-grid budget is **6 h**, and at n = 5000 the median task needs
+**~10 core-h** — so the budget fires, and `_run` then marks the **remaining** algorithms `skipped_time`,
+walking `build_suite_rgg` in order, which ends:
+
+```
+... l1sep_gmr, l1sep_iomr, spc_gmr, spc_iomr, PIVOT, LEFT_EDGE
+```
+
+**`pivot` and `left_edge` are last — and they are exactly the two whose limitation the section exists to
+demonstrate.** Under a 6 h budget their failure would be *true by construction of the suite order*, and
+unfalsifiable. The RGG is connected (median 1 component, giant ≥ 99.4%), so a task is hard-bounded at
+16 × 1800 s = **8 h**; a **9 h** budget therefore never binds and the per-algorithm cap is the only thing left
+that can stop an algorithm. `collect_rgg_scale.py` **G4 gates on `skipped_time == 0`** and refuses to print if
+the budget ever fired. (On the published grid `skipped_time` is 0 of 7,040 rows — the hazard is entirely new
+to the larger n, which is why it would have been missed.)
+
+**Scale is a VERTEX claim, and that is the stronger one.** At n = 5000 the graph carries **29,470 edges** (the
+dense family reaches 563k, so this is no edge-count record) — but `pivot` and `left_edge` **complete** it to
+**12,497,500**, a **424× blowup**, at ~5.5 GB peak. They pay Θ(n²) whether the edges are there or not. That is
+only visible at large n *on a sparse graph*; the dense family could never have shown it.
+
+**Fraction and magnitude now run in BOTH directions** (`P2if`, `P2im` are new). The published sweeps are
+deflate-only, and the corruption direction does not shift the ranking — it **inverts** it. A one-direction
+sweep cannot support a claim about fraction or magnitude in a section whose thesis is that the direction
+decides.
+
 Figures are still copied into `figures/` by hand from `Average Metric Repair Sage/analysis/figs/`. That is the
 one remaining un-gated hop, and it has already gone stale once.
 
