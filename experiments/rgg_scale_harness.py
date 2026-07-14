@@ -1,4 +1,4 @@
-"""The RGG SCALE array -- the sparse family pushed to n = 5000, in both corruption directions.
+"""The RGG SCALE array -- the sparse family pushed to n = 4000, in both corruption directions.
 
 WHY. If the benchmark section is going to rest on the RGG (the only synthetic family with a planted corrupted
 set AND true weights, and the one that actually resembles the real graphs), then the RGG has to carry the
@@ -7,7 +7,7 @@ Neither is enough.
 
 WHAT IS NEW, AND WHY EACH PIECE IS THERE.
 
-  * n = 1000 .. 5000, step 200 (21 points), 30 seeds, INFLATE and DEFLATE.  The old ladder stopped at 3000
+  * n = 1000 .. 4000, step 200 (16 points), 30 seeds, INFLATE and DEFLATE.  The old ladder stopped at 3000
     with 20 seeds and no deflate arm at scale.
 
   * THE FRACTION AND MAGNITUDE SWEEPS NOW RUN IN BOTH DIRECTIONS.  P2df and P2dm are deflate-only in the
@@ -24,15 +24,17 @@ WHAT IS NEW, AND WHY EACH PIECE IS THERE.
 THE BUDGET IS RAISED, AND THAT IS THE WHOLE POINT OF THIS FILE'S EXISTENCE.
 
 The section wants to claim that algorithms hit their limits even on a SPARSE family. That claim is only worth
-making if a timeout is an algorithmic fact. It would not have been. harness's per-grid TASK_BUDGET is 6 h,
-and at n = 5000 the median task needs ~10 core-h. When the budget expires, `_run` marks every REMAINING
-algorithm `skipped_time` -- walking build_suite_rgg in order, which ends:
+making if a timeout is an algorithmic fact, and under the harness's own 6 h per-grid TASK_BUDGET it would not
+have been. At n = 4000 the median task needs ~5.3 core-h, which clears 6 h -- but the p90 does not, and the
+ladder was designed to reach n = 5000 (~10 core-h) before it was trimmed. The budget is therefore a live
+hazard on the top rungs and a latent one everywhere. When it expires, `_run` marks every REMAINING algorithm
+`skipped_time` -- walking build_suite_rgg in order, which ends:
 
     ... l1sep_gmr, l1sep_iomr, spc_gmr, spc_iomr, PIVOT, LEFT_EDGE
 
 pivot and left_edge are LAST. They are also precisely the two methods whose limitation the section exists to
-demonstrate (they COMPLETE the graph: at n = 5000 that is 12,497,500 edges for a graph that has ~30,000 --
-a 450x blowup, and 5.5 GB of peak memory). Under a 6 h budget they would come back `skipped_time` and nobody
+demonstrate (they COMPLETE the graph: at n = 4000 that is 7,998,000 edges for a graph that has ~24,000 --
+a 333x blowup, and ~3.7 GB of peak memory). Under a 6 h budget they would come back `skipped_time` and nobody
 could tell whether they hit their 1800 s cap or were merely last in the queue when the clock ran out. The
 finding would have been true BY CONSTRUCTION OF THE SUITE ORDER.
 
@@ -51,7 +53,7 @@ no edit. The grid, the seeds and the sweep set live here; the generator, suite, 
 schema are the harness's, verbatim, so these rows concatenate with the published ones.
 
   one task  = one graph = the whole suite  -> results_rgg_scale/task_NNNNNN.csv
-  the grid  = 70 points x 30 seeds = 2,100 tasks
+  the grid  = 60 points x 30 seeds = 1,800 tasks
 
   count      sage -python experiments/rgg_scale_harness.py --count
   preflight  sage -python experiments/rgg_scale_harness.py --preflight
@@ -70,20 +72,24 @@ import rgg_harness                                                      # noqa: 
 from rgg_harness import _base_p1, _base_p2, _run, task_seed, generate_rgg   # noqa: E402
 from metric_repair import domr_alg                                      # noqa: E402
 
-NS = tuple(range(1000, 5001, 200))          # 21 points: 1000, 1200, ..., 5000
+# n up to 4000, not 5000. The ladder's cost goes as n^2.84, so the top rungs dominate everything: stopping at
+# 4000 halves the whole array (4,749 -> 2,367 core-h) and costs the headline claim almost nothing --- the
+# graph-completion blowup is 333x at n=4000 against 417x at n=5000, and pivot still needs ~3.7 GB. The point
+# was never the last 20% of the ladder; it was that a method which ignores sparsity dies on a sparse graph.
+NS = tuple(range(1000, 4001, 200))          # 16 points: 1000, 1200, ..., 4000
 SEEDS = 30
 FRACS = (0.02, 0.05, 0.10, 0.20, 0.30)
 MAGS = (2.0, 3.0, 5.0, 10.0)
 
 # The ceiling for a CONNECTED graph is 16 algos x 1800 s = 8 h. 9 h therefore never binds, and the
 # per-algorithm cap is the only thing that can stop an algorithm. See the module docstring: this is the
-# difference between "pivot cannot do n=5000" and "pivot was last in the queue".
+# difference between "pivot cannot do n=4000" and "pivot was last in the queue".
 BUDGET_S = 9 * 3600
 
 
 def points():
     pts = []
-    # the size ladder, BOTH directions. deg stays at _base_p1's 12 -> m ~ 6n (30k edges at n=5000).
+    # the size ladder, BOTH directions. deg stays at _base_p1's 12 -> m ~ 6n (~24k edges at n=4000).
     for n in NS:
         a = _base_p1(); a.update(sweep="S1", n=n); pts.append(a)
         d = _base_p1(); d.update(sweep="S1d", n=n, direction="deflate"); pts.append(d)
@@ -158,7 +164,8 @@ def preflight(seeds=1):
     cfg = [c for c in POINTS if c["sweep"] == "S1" and c["n"] == max(NS)][0]
     T, H, _, _, _, _ = generate_rgg(cfg, task_seed(cfg, 0))
     m = H.number_of_edges()
-    comp = 5000 * 4999 // 2
+    # DERIVED from the ladder, never typed: this number is quoted in the paper, and trimming NS must move it.
+    comp = max(NS) * (max(NS) - 1) // 2
     print(f"\n  [PASS] top of the ladder builds: n={max(NS)}  m={m:,}")
     print(f"         pivot/left_edge COMPLETE the graph -> {comp:,} edges, a {comp/m:.0f}x blowup.")
     print(f"         That is the limitation the section exists to show, and it needs this n to be visible.")

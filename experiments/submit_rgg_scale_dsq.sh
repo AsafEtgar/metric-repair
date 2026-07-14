@@ -3,17 +3,17 @@
 #
 #   bash experiments/submit_rgg_scale_dsq.sh <conda_env> <pi_netid> [mem]
 #
-# WHAT IT IS. The sparse family pushed to n = 5000 in BOTH corruption directions, with the fraction and
-# magnitude sweeps run in both directions too, and the jitter sweep dropped. 70 points x 30 seeds = 2,100
+# WHAT IT IS. The sparse family pushed to n = 4000 in BOTH corruption directions, with the fraction and
+# magnitude sweeps run in both directions too, and the jitter sweep dropped. 60 points x 30 seeds = 1,800
 # tasks. This is the array the benchmark section rests on if the RGG becomes the spine.
 #
 # THE TWO THINGS THAT MAKE IT WORTH RUNNING.
 #
-#   SCALE IS A VERTEX CLAIM, AND THAT IS THE STRONGER ONE. At n = 5000 the graph carries ~29,500 edges --
+#   SCALE IS A VERTEX CLAIM, AND THAT IS THE STRONGER ONE. At n = 4000 the graph carries ~24,000 edges --
 #   the dense family reaches 563,000, so this is not an edge-count record. But `pivot` and `left_edge`
-#   COMPLETE the graph before they start: at n = 5000 that is 12,497,500 edges for a graph that has 29,470,
-#   a 424x blowup, and ~5.5 GB of peak memory. "We ran to n = 5000 on a graph with 29k edges, and the
-#   graph-completing methods needed 12.5M" is a sharper sentence than any edge count, and it is only
+#   COMPLETE the graph before they start: at n = 4000 that is 7,998,000 edges for a graph that has ~24,000,
+#   a 333x blowup, and ~3.7 GB of peak memory. "We ran to n = 4000 on a graph with 24k edges, and the
+#   graph-completing methods needed 8.0M" is a sharper sentence than any edge count, and it is only
 #   visible at large n ON A SPARSE GRAPH.
 #
 #   THE FRACTION/MAGNITUDE SWEEPS NOW RUN IN BOTH DIRECTIONS. The published grid runs them deflate-only,
@@ -21,8 +21,8 @@
 #   100% of inflate tasks and beats it on 100% of deflate). A one-direction sweep cannot support a claim
 #   about fraction or magnitude in a section whose thesis is that the direction decides.
 #
-# THE BUDGET IS RAISED TO 9 h, AND THIS IS NOT A TUNING KNOB. harness's per-grid budget is 6 h. At n = 5000
-# the median task needs ~10 core-h, so the budget would fire -- and `_run` then marks the REMAINING
+# THE BUDGET IS RAISED TO 9 h, AND THIS IS NOT A TUNING KNOB. harness's per-grid budget is 6 h. At n = 4000
+# the top rungs approach it, so the budget can fire -- and `_run` then marks the REMAINING
 # algorithms `skipped_time`, in build_suite_rgg order, which ends: ... spc_gmr, spc_iomr, PIVOT, LEFT_EDGE.
 # Those two are exactly the methods whose limitation the section exists to demonstrate. Under a 6 h budget
 # their failure would be TRUE BY CONSTRUCTION OF THE SUITE ORDER, and unfalsifiable. The RGG is connected, so
@@ -32,14 +32,13 @@
 # NON-DESTRUCTIVE. rgg_harness.py is imported read-only (`_run` already takes `budget` as a parameter, so
 # the raise costs no edit). Writes ONLY results_rgg_scale/.
 #
-# COST. ~4,700 core-hours. Per-task median climbs from 0.09 core-h at n=1000 to ~8 h (the cap ceiling) at
-# n=5000. Walltime 12 h covers the 9 h budget plus instance build and the DOMR pass.
+# COST. ~2,370 core-hours. Per-task median climbs from 0.09 core-h at n=1000 to ~5.3 core-h at n=4000. Walltime 12 h covers the 9 h budget plus instance build and the DOMR pass.
 set -euo pipefail
 
 ENV="${1:-metricrepair}"
 NETID="${2:-CHANGE_ME}"
-MEM="${3:-16g}"            # pivot/left_edge peak ~5.5 GB at n=5000 (completion is 12.5M edges). Headroom.
-MAXJOBS=2100               # every task at once; the array is embarrassingly parallel
+MEM="${3:-12g}"            # pivot/left_edge peak ~3.7 GB at n=4000 (completion is 8.0M edges). Headroom.
+MAXJOBS=1800               # every task at once; the array is embarrassingly parallel
 TIME=12:00:00              # > the 9 h budget. Never shrink one without the other.
 
 OUTDIR=results_rgg_scale

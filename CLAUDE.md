@@ -255,13 +255,13 @@ submit it — nothing is lost, the code and the preflight keep.
 
 ### The RGG SCALE array — `rgg_scale`, added 2026-07-14, NOT YET RUN
 
-The benchmark section's candidate spine: the sparse family pushed to **n = 5000** in **both** corruption
+The benchmark section's candidate spine: the sparse family pushed to **n = 4000** in **both** corruption
 directions, with fraction and magnitude swept in both directions, and the jitter sweep dropped.
-**70 points × 30 seeds = 2,100 tasks, ~4,700 core-hours.**
+**60 points × 30 seeds = 1,800 tasks, ~2,370 core-hours.**
 
 ```
-experiments/rgg_scale_harness.py     the array   (n=1000..5000 step 200; S1/S1d/S2/S2k/P2df/P2dm/P2if/P2im)
-experiments/submit_rgg_scale_dsq.sh  16g, 12h walltime, MAXJOBS=2100; runs the preflight, refuses on failure
+experiments/rgg_scale_harness.py     the array   (n=1000..4000 step 200; S1/S1d/S2/S2k/P2df/P2dm/P2if/P2im)
+experiments/submit_rgg_scale_dsq.sh  12g, 12h walltime, MAXJOBS=1800; runs the preflight, refuses on failure
 experiments/collect_rgg_scale.py     6 gates
 ```
 
@@ -270,8 +270,9 @@ costs no edit.
 
 **THE BUDGET IS RAISED TO 9 h, AND IT IS NOT A TUNING KNOB.** The section wants to claim that algorithms hit
 their limits even on a sparse family. That claim is only worth making if a timeout is an *algorithmic* fact.
-It would not have been. The harness's per-grid budget is **6 h**, and at n = 5000 the median task needs
-**~10 core-h** — so the budget fires, and `_run` then marks the **remaining** algorithms `skipped_time`,
+It would not have been. The harness's per-grid budget is **6 h**, and the top rungs approach it (the ladder
+was designed to reach n = 5000, ~10 core-h, before it was trimmed) — so the budget can fire, and `_run` then
+marks the **remaining** algorithms `skipped_time`,
 walking `build_suite_rgg` in order, which ends:
 
 ```
@@ -286,9 +287,9 @@ that can stop an algorithm. `collect_rgg_scale.py` **G4 gates on `skipped_time =
 the budget ever fired. (On the published grid `skipped_time` is 0 of 7,040 rows — the hazard is entirely new
 to the larger n, which is why it would have been missed.)
 
-**Scale is a VERTEX claim, and that is the stronger one.** At n = 5000 the graph carries **29,470 edges** (the
+**Scale is a VERTEX claim, and that is the stronger one.** At n = 4000 the graph carries **23,470 edges** (the
 dense family reaches 563k, so this is no edge-count record) — but `pivot` and `left_edge` **complete** it to
-**12,497,500**, a **424× blowup**, at ~5.5 GB peak. They pay Θ(n²) whether the edges are there or not. That is
+**7,998,000**, a **341× blowup**, at ~3.7 GB peak. They pay Θ(n²) whether the edges are there or not. That is
 only visible at large n *on a sparse graph*; the dense family could never have shown it.
 
 **Fraction and magnitude now run in BOTH directions** (`P2if`, `P2im` are new). The published sweeps are
