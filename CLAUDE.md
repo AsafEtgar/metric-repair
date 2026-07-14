@@ -297,6 +297,32 @@ deflate-only, and the corruption direction does not shift the ranking — it **i
 sweep cannot support a claim about fraction or magnitude in a section whose thesis is that the direction
 decides.
 
+---
+
+### §5 BENCHMARKS — the structure, agreed 2026-07-14. Build to this.
+
+The RGG is the spine. The author set this order; do not silently reorganise it.
+
+| § | content |
+|---|---|
+| **5.1** | **Small RGG.** Where the optimum is known — the ILP converges on **4,960 of 5,000** tasks (99.2%, against the dense grid's 69.8% / 36.0%). This is the only place the paper can say *how far from optimal*: \|S\|/OPT = `l1sep_gmr` **1.562**, `spc_gmr` 2.649, `pivot` **8.723**. |
+| **5.2** | **Performance, PER DIRECTION.** Never pooled. There is no single "performance on the RGG": `l1sep_gmr` rewrites 12% of the graph under deflation and **80%** under inflation. |
+| **5.3** | **Limitations.** Runtime and memory. `pivot`/`left_edge` **complete the graph** — at n=4000 that is 7,998,000 edges for a graph with 23,470, a **341× blowup**, ~3.7 GB. They pay Θ(n²) whether the edges are there or not, and this is **only visible at large n on a SPARSE graph**. |
+| **5.4** | **Fraction and magnitude**, in both directions (that is what `P2if`/`P2im` are for). |
+| **5.5** | **The corruption decides.** `tab_invert`. |
+
+**Why 5.2 comes before 5.5 and it still works:** the author's structure reports performance *per direction from
+the start*, so no number is ever presented pooled and none is retroactively ambiguous. 5.5 then formalises
+what the reader has already been seeing. (An earlier draft put the direction finding last while reporting
+pooled performance first — that version does not survive, because pooled medians are not statistics of
+anything. See the GROUPS note in `inversion_table.py`.)
+
+**The RGG needs no dense family for a density story.** Its own degree sweep (`S2`, n=2000, deg 4→40) spans
+m = 3,942 → 37,229 at ~2 core-h/task — and its weights are Euclidean distances, so **density and the weight
+model are independent by construction**. That is exactly the pathology that makes a Γ(n,p) density sweep so
+awkward (coupled weights ⇒ density *is* brokenness; decoupled weights need a whole second model). The RGG
+degree sweep replaces the dense density sweep and does it better.
+
 Figures are still copied into `figures/` by hand from `Average Metric Repair Sage/analysis/figs/`. That is the
 one remaining un-gated hop, and it has already gone stale once.
 
