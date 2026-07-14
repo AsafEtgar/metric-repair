@@ -65,6 +65,34 @@ DIRS = ["inflate", "deflate"]
 # every deflate sweep (S3d, S4d, P2df, P2dm) sits at n=300. Every direction comparison is made here.
 MATCH_N = 300
 
+# THE BASELINE CORRUPTION -- and matching on n was NOT enough.
+#
+# The small grid is an OFAT star: every sweep holds the baseline and moves ONE knob. Filtering to n = 300
+# therefore keeps the whole star, and the two directions' stars are NOT the same shape -- inflate owns the
+# density sweeps (S2, S2k: deg 8..40), deflate has no density sweep at all, and their fraction/magnitude
+# marginals differ. A |S|/OPT pooled over that measures the star, not the algorithm.
+#
+# It hid because the MEDIANS survive it (l1sep 7.73 -> 7.59) while the STANDARD DEVIATIONS do not: pooled,
+# pivot reads 10.2 +/- 10.6; at a fixed corruption it is 7.3 +/- 0.2. The pooled sd is variance BETWEEN GRID
+# POINTS masquerading as instance-to-instance noise, and it would have licensed the exact opposite of the
+# truth -- that the graph-completers are erratic, when at a fixed corruption they are the most deterministic
+# methods in the table. A spread is only a statistic of an algorithm if the population is one population.
+#
+# So every direction comparison is pinned to the S1 baseline point, which BOTH directions carry.
+BASE_DEG, BASE_MODE, BASE_FRAC, BASE_MAG = 12, "radius", 0.10, 3.0
+
+
+def matched(S):
+    """The n = MATCH_N baseline corruption, identical in both directions. The ONLY population |S|/OPT is
+    reported on. Raises rather than return a mismatched one."""
+    E = ok(S)[ok(S).ref_kind.eq("exact") & ok(S).n.eq(MATCH_N)
+              & ok(S).deg.eq(BASE_DEG) & ok(S)["mode"].eq(BASE_MODE)
+              & ok(S).frac_q.eq(BASE_FRAC) & ok(S).magnitude.eq(BASE_MAG)].dropna(subset=["ratio"])
+    if set(E.direction.dropna()) != set(DIRS):
+        raise SystemExit(f"FATAL: the baseline at n={MATCH_N} carries only "
+                         f"{sorted(set(E.direction.dropna()))}. Refusing to compare across directions.")
+    return E
+
 STY = {"l1sep_gmr": ("#0072B2", "o"), "l1sep_iomr": ("#0072B2", "o"),
        "spc_gmr": ("#009E73", "s"), "spc_iomr": ("#009E73", "s"),
        "pivot": ("#D55E00", "^"), "left_edge": ("#D55E00", "^"),
@@ -145,6 +173,17 @@ def gate(S, L):
         if not c:
             fails.append(name)
 
+    # G0  THE POPULATIONS ARE ONE POPULATION. Every |S|/OPT in tab:opt compares an inflate group to a deflate
+    #     group; if those groups differ in ANY corruption knob, the comparison measures the knob. Matching on
+    #     n was not enough -- the OFAT star gave inflate a density sweep (deg 8..40) that deflate never had.
+    #     This gate reads the knobs off the DELIVERED rows and demands the two directions agree on all four.
+    M = matched(S)
+    diffs = [k for k in ("deg", "mode", "frac_q", "magnitude")
+             if set(M[M.direction.eq("inflate")][k].dropna()) != set(M[M.direction.eq("deflate")][k].dropna())]
+    knobs = {k: sorted(set(M[k].dropna())) for k in ("deg", "mode", "frac_q", "magnitude")}
+    chk(not diffs, "G0 both directions sit on the SAME corruption",
+        f"{knobs}" + (f"; DIFFER ON {diffs}" if diffs else ""))
+
     # G1  DOMR's cover IS the heavy set, on both grids. One line, two whole pipelines.
     for lab, d in (("small", S), ("large", L)):
         D = ok(d)[ok(d).algo.eq("domr")].dropna(subset=["size", "H"])
@@ -181,17 +220,9 @@ def gate(S, L):
     #     directions, there is no inversion to report and the prose must not claim one. ANTI-VACUITY: this
     #     fails loudly on data that does not contain the finding.
     #
-    #     MATCHED ON n. The small grid's n-ladder (S1) is INFLATE ONLY -- deflate lives at n=300 alone. So a
-    #     direction comparison pooled over n would put inflate's n=100..500 against deflate's n=300, and the
-    #     ratios do drift with n (pivot 6.34 -> 7.67 from n=100 to 500). MATCH_N is the only n that carries
-    #     both directions, and every number in tab:opt is computed there. This is the same discipline the
-    #     inversion table needed: a comparison across two different populations measures the populations.
-    E = ok(S)[ok(S).ref_kind.eq("exact") & ok(S).n.eq(MATCH_N)].dropna(subset=["ratio"])
-    both = set(E.direction.dropna())
-    if both != set(DIRS):
-        raise SystemExit(f"FATAL: n={MATCH_N} carries only {sorted(both)}. The direction comparison needs "
-                         "both, and "
-                         "no other n has deflate. Refusing to compare across different n.")
+    #     MATCHED ON n AND ON THE CORRUPTION. See matched(): n alone was not enough. Every number in tab:opt
+    #     is computed on the one baseline point both directions carry.
+    E = matched(S)
     p = E.pivot_table(index="algo", columns="direction", values="ratio", aggfunc="median")
     a, b = "l1sep_gmr", "spc_gmr"
     swap = (p.loc[a, "inflate"] > p.loc[b, "inflate"]) and (p.loc[a, "deflate"] < p.loc[b, "deflate"])
@@ -252,121 +283,236 @@ def gate(S, L):
         print(f"         *** ONE DIRECTION ONLY. Any claim about fraction or magnitude from these rows is a")
         print(f"         *** {dirs[0].upper()} claim. The direction INVERTS the ranking, so it does not")
         print(f"         *** generalise. \\secFMDirs records this; the prose must disclose it.")
-    return fails, R, p, dirs
+
+    # G6  frac_q IS A REQUEST, NOT A GUARANTEE -- and the shortfall must never be silent.
+    #
+    #     break_metric_graph SKIPS edges it cannot break, with a bare `continue` and no warning:
+    #       inflate  needs the edge on a CYCLE     -- bridges are skipped (graph_models.py:262)
+    #       deflate  needs the edge on a TRIANGLE  -- an edge with no common neighbour has no 2-path to
+    #                undercut, so there is nothing to shortcut (graph_models.py:268), and a zero gap leaves
+    #                no room below it (:271). The TRIANGLE is the binding one, and it is STRICTLY STRONGER
+    #                than inflate's cycle condition.
+    #
+    #     So |B| can come back short of round(frac_q*m). Nothing downstream is WRONG when it does -- every
+    #     gate reads n_corrupted, the set actually planted -- but a family where the condition bites loses
+    #     coverage, and would lose it quietly. It has bitten for real: on dimacs_ny_d (28.7% bridges) a
+    #     requested 10% deflate landed 35 of 602 edges, and an earlier `gap <= 1` guard skipped EVERY deflate
+    #     edge on the float RGG, whose weights are all below 1.
+    #
+    #     The RGG pays because it is a geometric graph and geometric graphs are clustered: at the deg=12
+    #     baseline 99.5% of edges sit on a triangle. This gate MEASURES that from the delivered rows rather
+    #     than trusting it. TOL is a coverage floor, not an expected value -- the realized rate is read from
+    #     the CSV, never assumed.
+    #     GATED ON THE POPULATION RATE, NOT THE WORST TASK -- and that is not a softening. The worst single
+    #     task on the whole campaign is a deg=4 INFLATE rung of S2 landing 83%: at expected degree 4 the RGG
+    #     grows bridges (8% of edges), and a bridge is not inflatable. That is a true structural fact about a
+    #     sparse geometric graph, it is confined to one rung of one density sweep, and it should be DISCLOSED,
+    #     not made to fail a build. What must not happen is the MEAN quietly sliding -- that is what a family
+    #     the corruption cannot reach looks like, and on dimacs_ny_d it would read 0.06.
+    TOL = 0.90
+    lands, worst = {}, (1.0, None)
+    for lab, d in (("small", S), ("large", L)):
+        w = d.drop_duplicates("task").dropna(subset=["n_corrupted", "frac_q", "E"])
+        for dr, g in w.groupby("direction"):
+            want = (g.frac_q * g.E).round()
+            hit = (g.n_corrupted / want.where(want > 0))
+            lands[(lab, dr)] = (hit.mean(), hit.min(), len(g))
+            if hit.min() < worst[0]:
+                worst = (hit.min(), f"{lab}/{dr} sweep={g.loc[hit.idxmin(), 'sweep']} "
+                                    f"deg={g.loc[hit.idxmin(), 'deg']:.0f}")
+    chk(all(v[0] >= TOL for v in lands.values()),
+        f"G6 the planted fraction LANDED (mean >= {TOL:.0%} of frac_q)",
+        "; ".join(f"{k[0]}/{k[1]} {v[0]:.3f}" for k, v in sorted(lands.items())))
+    if worst[0] < TOL:
+        print(f"         *** worst single task {worst[0]:.3f} -- {worst[1]}. Expected and disclosed: at low")
+        print(f"         *** degree the RGG grows BRIDGES, and a bridge is not inflatable. \\secLandWorst*")
+        print(f"         *** records it. |B| is n_corrupted, the set actually planted, so no number is wrong.")
+    return fails, R, p, dirs, lands
 
 
 # ----------------------------------------------------------------------------
 # Table: |S|/OPT by direction, on the small grid
 # ----------------------------------------------------------------------------
 def emit_tab_opt(S, R, p):
-    E = ok(S)[ok(S).ref_kind.eq("exact") & ok(S).n.eq(MATCH_N)].dropna(subset=["ratio"])
+    """|S|/OPT by direction, with the MEAN and STANDARD DEVIATION beside the median.
+
+    WHY THE SPREAD EARNS ITS COLUMNS. A median alone says pivot is bad (7.29 under inflation). The spread says
+    something the median cannot: pivot's standard deviation (10.59) EXCEEDS its mean (10.21). It is not merely
+    a poor method, it is an UNPREDICTABLE one -- sometimes 5x optimal, sometimes forty. left_edge under
+    deflation is worse still (median 4.58, mean 9.84, sd 14.04). Both are the graph-completing methods, and
+    both have a heavy right tail that a median hides entirely.
+
+    And it cuts the other way too. l1sep_gmr under deflation is not just the best cover (1.241) -- it is
+    nearly DETERMINISTIC: sd 0.064, five per cent of the mean. "Best" and "reliable" are different claims and
+    the table should be able to make both.
+
+    Mean > median on every row that matters, which is the signature of the right tail. We report all three.
+    """
+    E = matched(S)
     nt = {d: E[E.direction.eq(d)].task.nunique() for d in DIRS}
     ilp = {a: ok(S)[ok(S).algo.eq(a)].task.nunique() for a in ("gmr_ilp", "iomr_ilp")}
     ntask = S.task.nunique()
 
     cap = (r"\caption{\textbf{The corruption decides --- and here it is measured against the \emph{true} "
-           r"optimum.} $|S|/\mathrm{OPT}$ on the small planted \textsc{rgg}s ($n = %d\text{--}%d$, %s planted "
-           r"instances), where the exact cover is available: \code{gmr\_ilp} solves %s of them and "
-           r"\code{iomr\_ilp} %s. Medians over the runs that returned \emph{and} verified, split by the "
-           r"direction of the corruption; bold marks the best and worst in each variant and direction. "
+           r"optimum.} $|S|/\mathrm{OPT}$ at $n = %d$, the one size carrying both corruptions, over the %s "
+           r"planted instances where the exact cover is available (\code{gmr\_ilp} solves %s of the small "
+           r"grid, \code{iomr\_ilp} %s). Bold marks the best and worst in each variant and direction. "
            r"\textbf{The two ends swap:} \code{spc\_gmr} is the best \GMR{} heuristic under inflation and the "
-           r"worst under deflation, and \code{l1sep\_gmr} does the reverse. This is not an artefact of a "
-           r"normalisation --- it is a ratio to \textsc{opt}. \textbf{And the heavy set is the optimum only "
-           r"under inflation}: an inflated edge exceeds its own detour, so it \emph{is} heavy and "
-           r"$H = B$ exactly ($\mathrm{OPT}/|H| = %.3f$); a deflated edge is a \emph{shortcut}, shorter than "
-           r"its detour, so $H$ cannot contain it and holds the victims instead ($|H| = %.2f\,|B|$, "
-           r"$\mathrm{OPT}/|H| = %.3f$).}"
-           % (int(S.n.min()), int(S.n.max()), _n(ntask), _n(ilp["gmr_ilp"]), _n(ilp["iomr_ilp"]),
-              R["inflate"]["opt_over_H"], R["deflate"]["H_over_B"], R["deflate"]["opt_over_H"]))
+           r"worst under deflation; \code{l1sep\_gmr} does the reverse. \textbf{The spread is a second "
+           r"finding.} Mean exceeds median on every row that matters --- a heavy right tail --- and for "
+           r"\code{pivot} and \code{left\_edge}, the two methods that \emph{complete} the graph, the standard "
+           r"deviation exceeds the mean: they are not merely poor, they are unpredictable. \code{l1sep\_gmr} "
+           r"under deflation is the opposite, and nearly deterministic.}"
+           % (MATCH_N, _n(ntask), _n(ilp["gmr_ilp"]), _n(ilp["iomr_ilp"])))
 
     out = [r"% GENERATED by experiments/section5.py -- DO NOT EDIT, DO NOT TRANSCRIBE. Regenerate.",
-           r"\begin{table}[t]\centering\small", cap, r"\label{tab:opt}",
-           r"\begin{tabular}{@{}lrr@{}}", r"\toprule",
-           r"algorithm & inflate & deflate \\",
+           r"\begin{table}[t]\centering\footnotesize", cap, r"\label{tab:opt}",
+           r"\resizebox{\columnwidth}{!}{%",
+           r"\begin{tabular}{@{}lrc@{\quad}rc@{}}", r"\toprule",
+           r" & \multicolumn{2}{c}{inflate} & \multicolumn{2}{c}{deflate} \\",
+           r"\cmidrule(lr){2-3}\cmidrule(l){4-5}",
+           r"algorithm & med. & mean $\pm$ sd & med. & mean $\pm$ sd \\",
            r"\midrule"]
+
+    st = {}          # (algo, dir) -> (median, mean, sd)
+    for a in E.algo.unique():
+        for d in DIRS:
+            A = E[E.algo.eq(a) & E.direction.eq(d)]
+            if len(A):
+                st[(a, d)] = (float(A.ratio.median()), float(A.ratio.mean()), float(A.ratio.std()))
+
     for var, algos in (("GMR", GMR), ("IOMR", IOMR)):
-        have = [a for a in algos if a in p.index]
+        have = [a for a in algos if (a, DIRS[0]) in st and (a, DIRS[1]) in st]
         if not have:
             continue
-        best = {d: min(have, key=lambda a: p.loc[a, d]) for d in DIRS}
-        worst = {d: max(have, key=lambda a: p.loc[a, d]) for d in DIRS}
-        out.append(r"\multicolumn{3}{@{}l}{\textbf{\%s{}}} \\[1pt]" % var)
-        for a in sorted(have, key=lambda x: p.loc[x, "inflate"]):
+        best = {d: min(have, key=lambda x: st[(x, d)][0]) for d in DIRS}
+        worst = {d: max(have, key=lambda x: st[(x, d)][0]) for d in DIRS}
+        out.append(r"\multicolumn{5}{@{}l}{\textbf{\%s{}}} \\[1pt]" % var)
+        for a in sorted(have, key=lambda x: st[(x, DIRS[0])][0]):
             cells = []
             for d in DIRS:
-                v = p.loc[a, d]
-                s = ("$\\mathbf{%.3f}$" % v) if a in (best[d], worst[d]) else ("$%.3f$" % v)
-                cells.append(s)
+                med, mu, sd = st[(a, d)]
+                m = (r"$\mathbf{%.3f}$" % med) if a in (best[d], worst[d]) else (r"$%.3f$" % med)
+                # sd > mean is the unpredictability signature. Mark it, so the reader does not have to
+                # divide two numbers in their head to see the one thing this column is here to show.
+                ms = r"$%.2f \pm %.2f$" % (mu, sd)
+                if sd > mu:
+                    ms = r"$%.2f \pm \mathbf{%.2f}$" % (mu, sd)
+                cells += [m, ms]
             out.append(r"\quad %s & %s \\" % (tex(a), " & ".join(cells)))
         out.append(r"\addlinespace[2pt]")
+
     out += [r"\midrule",
-            r"\quad \DOMR{} \emph{(the heavy set)} & $%.3f$ & $%.3f$ \\"
+            r"\quad \DOMR{} \emph{(the heavy set)} & $%.3f$ & & $%.3f$ & \\"
             % (1.0 / R["inflate"]["opt_over_H"], 1.0 / R["deflate"]["opt_over_H"]),
-            r"\bottomrule", r"\end{tabular}", r"\end{table}"]
-    return "\n".join(out), nt
+            r"\bottomrule", r"\end{tabular}", r"}", r"\end{table}"]
+    return "\n".join(out), nt, st
 
 
 # ----------------------------------------------------------------------------
 # Figures
 # ----------------------------------------------------------------------------
+# fig:opt DROPS pivot, and only fig:opt does. Its standard deviation is 10.59 against a mean of 10.21 -- a
+# band that wide would set the y-axis for the whole panel and squash every other method into a smear. The
+# fact that it is unpredictable is a FINDING, and Table~\ref{tab:opt} makes it in the one place where a
+# number can: the sd column. A figure cannot draw a distribution that overlaps everything else and still be
+# a figure. It stays in the table, out of the plot, and the caption says so.
+FIG_OPT_DROP = {"pivot"}
+
+
 def fig_opt(S, figdir):
-    """5.1 -- the two things the small grid can honestly show.
+    """5.1 -- MEANS with +/- one standard deviation, not medians.
 
-    LEFT: |S|/OPT up the n-ladder. Inflate only, because the ladder IS inflate only (S1); every deflate sweep
-    sits at n=300. Drawing a deflate "curve" from a single n would be a line through one point.
+    The median says which method is better. The band says whether you can rely on it -- and on this data the
+    two are different questions with different answers. l1sep_gmr under deflation is 1.23 +/- 0.06: a band you
+    can barely see, which is the point. Under inflation the same method is 8.54 +/- 3.31, and the band is
+    most of the panel.
 
-    RIGHT: the reversal, as a SLOPE CHART at n=300 -- the one n that carries both directions. Each algorithm
-    is a segment from its inflate ratio to its deflate ratio. THE CROSSING LINES ARE THE FINDING: spc_gmr
-    climbs while l1sep_gmr dives, and they change places. A bar chart would hide that; a slope chart is the
-    only encoding where "they swap ends" is the thing your eye actually sees.
+    LEFT: mean +/- sd up the n-ladder, inflate only, because the ladder IS inflate only (S1) -- every deflate
+    sweep sits at n=300, and a "curve" through one n is a dot.
+
+    RIGHT: the reversal at n=300, the one size carrying both corruptions, with error bars. Each segment runs
+    from a method's inflate mean to its deflate mean. THE CROSSING SEGMENTS ARE THE FINDING.
     """
-    E = ok(S)[ok(S).ref_kind.eq("exact")].dropna(subset=["ratio"])
+    E = ok(S)[ok(S).ref_kind.eq("exact")].dropna(subset=["ratio"])   # left panel: the S1 ladder only
+    M = matched(S)                                                   # right panel: the direction comparison
+    algos = [a for a in GMR if a not in FIG_OPT_DROP]
     fig, axes = plt.subplots(1, 2, figsize=(10, 4.0))
 
-    # --- left: the ladder (inflate)
+    # --- left: the ladder (inflate), mean +/- sd
     ax = axes[0]
     lad = E[E.sweep.eq("S1") & E.variant.eq("GMR")]
-    for a in GMR:
+    for a in algos:
         A = lad[lad.algo.eq(a)]
         if A.empty:
             continue
-        g = A.groupby("n").ratio.median().sort_index()
+        g = A.groupby("n").ratio.agg(["mean", "std"]).sort_index()
         c, m = STY[a]
-        ax.plot(g.index, g.values, marker=m, ms=4, lw=1.6, color=c, label=nm(a))
+        ax.plot(g.index, g["mean"], marker=m, ms=4, lw=1.7, color=c, label=nm(a))
+        ax.fill_between(g.index, g["mean"] - g["std"], g["mean"] + g["std"], color=c, alpha=0.15, lw=0)
     ax.axhline(1.0, color="black", lw=1.4, ls="--")
     ax.text(105, 1.03, "domr $=$ OPT", fontsize=7)
     ax.set_yscale("log"); ax.set_xlabel("$n$", fontsize=9)
-    ax.set_ylabel(r"$|S| \,/\, \mathrm{OPT}$   $\downarrow$", fontsize=9)
+    ax.set_ylabel(r"$|S| \,/\, \mathrm{OPT}$   (mean $\pm$ sd)   $\downarrow$", fontsize=9)
     ax.set_title("inflate: the ratio does not improve with $n$", fontsize=10)
     ax.legend(fontsize=7, ncol=2); ax.grid(alpha=0.25, lw=0.5)
 
-    # --- right: the reversal, matched at n = MATCH_N
+    # --- right: the reversal, matched at n = MATCH_N, means with error bars
     ax = axes[1]
-    K = E[E.n.eq(MATCH_N) & E.variant.eq("GMR")]
-    p = K.pivot_table(index="algo", columns="direction", values="ratio", aggfunc="median")
-    # Label on the INFLATE side. Under deflation four methods land within 1.24-1.32 and their labels collide
-    # into an unreadable smear; under inflation they are spread over 2.58-7.73. Label where there is room.
-    for a in GMR:
-        if a not in p.index:
+    K = M[M.variant.eq("GMR")]
+    mu = K.pivot_table(index="algo", columns="direction", values="ratio", aggfunc="mean")
+    sd = K.pivot_table(index="algo", columns="direction", values="ratio", aggfunc="std")
+    # MERGE COINCIDENT SERIES. gmr_rand and gmr_thr return the SAME cover on this family -- the covering LP is
+    # integral here, so randomized and threshold rounding land on the same integral point, and their curves are
+    # identical to the last decimal. Drawing both stacks two labels into an unreadable smear and implies two
+    # measurements where there is one. Draw one line, label it with both names, and say what that means.
+    drawn = []
+    for a in algos:
+        if a not in mu.index:
             continue
-        c, m = STY[a]
-        ax.plot([0, 1], [p.loc[a, "inflate"], p.loc[a, "deflate"]], marker=m, ms=6, lw=2.0, color=c)
-        ax.annotate(nm(a), (-0.05, p.loc[a, "inflate"]), fontsize=7.5, color=c, va="center", ha="right")
+        y = (float(mu.loc[a, "inflate"]), float(mu.loc[a, "deflate"]))
+        twin = next((g for g in drawn if abs(g["y"][0] - y[0]) < 1e-6 and abs(g["y"][1] - y[1]) < 1e-6), None)
+        if twin is not None:
+            twin["names"].append(nm(a))                 # same cover: one line, two names
+            continue
+        drawn.append(dict(algo=a, y=y,
+                          e=(float(sd.loc[a, "inflate"]), float(sd.loc[a, "deflate"])),
+                          names=[nm(a)]))
+    for g in drawn:
+        c, m = STY[g["algo"]]
+        ax.errorbar([0, 1], g["y"], yerr=g["e"], marker=m, ms=6, lw=2.0, color=c,
+                    capsize=3, elinewidth=1.2, capthick=1.2)
+        ax.annotate(" / ".join(g["names"]), (-0.06, g["y"][0]), fontsize=7.5, color=c,
+                    va="center", ha="right")
     ax.axhline(1.0, color="black", lw=1.4, ls="--")
     ax.text(1.02, 1.02, "domr $=$ OPT", fontsize=7)
-    ax.set_xlim(-0.75, 1.35); ax.set_xticks([0, 1]); ax.set_xticklabels(["inflate", "deflate"])
+    ax.set_xlim(-0.8, 1.35); ax.set_xticks([0, 1]); ax.set_xticklabels(["inflate", "deflate"])
     ax.set_yscale("log")
-    ax.set_ylabel(r"$|S| \,/\, \mathrm{OPT}$   $\downarrow$", fontsize=9)
+    ax.set_ylabel(r"$|S| \,/\, \mathrm{OPT}$   (mean $\pm$ sd)   $\downarrow$", fontsize=9)
     ax.set_title(f"they swap ends  ($n = {MATCH_N}$)", fontsize=10)
     ax.grid(alpha=0.25, lw=0.5, axis="y")
     fig.tight_layout()
-    for e in ("pdf", "png"):
-        fig.savefig(os.path.join(figdir, f"fig_s51_opt.{e}"), dpi=160, bbox_inches="tight")
+    for e_ in ("pdf", "png"):
+        fig.savefig(os.path.join(figdir, f"fig_s51_opt.{e_}"), dpi=160, bbox_inches="tight")
     plt.close(fig)
 
 
 def fig_ladder(L, figdir):
-    """5.2 -- |S|/m up the ladder, one panel per direction. DOMR (= |H|/m) is the dashed reference."""
+    """5.2 -- MEAN +/- one standard deviation of |S|/m up the ladder, one panel per direction.
+
+    THE BANDS ARE HAIRLINES, AND THAT IS THE POINT. Every method's coefficient of variation here is <= 0.04
+    (the largest sd is 0.016 on an axis that runs 0 to 1). |S|/m is a STABLE statistic: hand a method a graph
+    from this family and it will rewrite very nearly the same share of it every time.
+
+    Read that against Table~\ref{tab:opt}, where pivot's |S|/OPT is 10.21 +/- 10.59 -- a standard deviation
+    larger than the mean. The two are not in conflict; together they say something neither says alone. Pivot's
+    COVER is not erratic (|S|/m = 0.828 +/- 0.014). What is erratic is how far that cover sits from the
+    optimum -- because OPT itself swings from instance to instance, and pivot rewrites four-fifths of the
+    graph regardless of what was actually necessary. It is not unpredictable in what it DOES. It is
+    unpredictable in what it WASTES.
+
+    That is also the case for |S|/m as the paper's axis: it is the quantity with a stable denominator.
+    """
     lad = ok(L)[ok(L).sweep.isin(["S1", "S1d"])]
     fig, axes = plt.subplots(1, 2, figsize=(10, 3.8), sharey=True)
     for ax, (d, sw) in zip(axes, (("inflate", "S1"), ("deflate", "S1d"))):
@@ -375,17 +521,21 @@ def fig_ladder(L, figdir):
             A = K[K.algo.eq(a)]
             if A.empty:
                 continue
-            g = A.groupby("n").sm.median().sort_index()
+            g = A.groupby("n").sm.agg(["mean", "std"]).sort_index()
             c, m = STY[a]
-            ax.plot(g.index, g.values, marker=m, ms=3.5, lw=1.3, color=c, ls=ls(a),
+            ax.plot(g.index, g["mean"], marker=m, ms=3.5, lw=1.3, color=c, ls=ls(a),
                     label=nm(a), alpha=0.9)
-        D = K[K.algo.eq("domr")].groupby("n").sm.median().sort_index()
-        ax.plot(D.index, D.values, ls="--", lw=1.8, color="black", label="domr $=|H|/m$")
+            ax.fill_between(g.index, g["mean"] - g["std"], g["mean"] + g["std"],
+                            color=c, alpha=0.20, lw=0)
+        D = K[K.algo.eq("domr")].groupby("n").sm.agg(["mean", "std"]).sort_index()
+        ax.plot(D.index, D["mean"], ls="--", lw=1.8, color="black", label="domr $=|H|/m$")
+        ax.fill_between(D.index, D["mean"] - D["std"], D["mean"] + D["std"],
+                        color="black", alpha=0.15, lw=0)
         ax.set_xlabel("$n$", fontsize=9)
         ax.set_title(d, fontsize=11)
         ax.set_ylim(0, 1.0)
         ax.grid(alpha=0.25, lw=0.5)
-    axes[0].set_ylabel(r"$|S|/m$   (share of the graph rewritten)   $\downarrow$", fontsize=9)
+    axes[0].set_ylabel(r"$|S|/m$   (mean $\pm$ sd)   $\downarrow$", fontsize=9)
     h, lb = axes[0].get_legend_handles_labels()
     fig.legend(h, lb, fontsize=7, ncol=7, loc="lower center", frameon=False, bbox_to_anchor=(0.5, -0.10))
     fig.tight_layout()
@@ -493,11 +643,18 @@ def fig_fracmag(L, figdir, dirs):
 # ----------------------------------------------------------------------------
 # Macros: every number the prose quotes
 # ----------------------------------------------------------------------------
-def emit_macros(S, L, R, p, dirs, nt):
+def emit_macros(S, L, R, p, dirs, nt, st, lands):
     M = [r"% GENERATED by experiments/section5.py -- DO NOT EDIT. Every number Section 5 quotes."]
 
     def mac(k, v):
         M.append(r"\newcommand{\sec%s}{%s}" % (k, v))
+
+    # frac_q is a REQUEST. Deflate needs a TRIANGLE (inflate only needs a cycle), so an edge with no common
+    # neighbour is silently skipped. These say how much of the request actually landed -- derived, so the
+    # prose can never claim a corruption fraction the corruption did not achieve.
+    for (lab, dr), (mean, mn, _) in lands.items():
+        mac(f"Land{lab.title()}{dr.title()}", f"{100 * mean:.1f}")
+        mac(f"LandWorst{lab.title()}{dr.title()}", f"{100 * mn:.1f}")
 
     # --- 5.1 the small grid
     mac("SmallTasks", _n(S.task.nunique()))
@@ -518,6 +675,18 @@ def emit_macros(S, L, R, p, dirs, nt):
             for d in DIRS:
                 mac("Opt" + key(a) + d.title(),
                     "%.3f" % p.loc[a, d])
+
+    # THE SPREAD. sd > mean is the unpredictability signature, and it belongs to exactly the two methods that
+    # complete the graph. l1sep under deflation is the mirror: nearly deterministic. Both are claims the
+    # median cannot make, and both are emitted so the prose does not have to type them.
+    for a in ("pivot", "left_edge", "l1sep_gmr"):
+        for d in DIRS:
+            if (a, d) in st:
+                med, mu, sd = st[(a, d)]
+                mac("Mean" + key(a) + d.title(), "%.2f" % mu)
+                mac("Sd" + key(a) + d.title(), "%.2f" % sd)
+    n_erratic = sum(1 for (a, d), (me, mu, sd) in st.items() if sd > mu and a != "gmr_ilp" and a != "iomr_ilp")
+    mac("NErratic", n_erratic)
 
     # --- 5.2 the ladder
     lad = ok(L)[ok(L).sweep.isin(["S1", "S1d"])]
@@ -687,13 +856,13 @@ def main():
     print(f"large grid: {L.task.nunique()} tasks (n={int(L.n.min())}-{int(L.n.max())})\n")
 
     print("GATE -- nothing is written until these pass")
-    fails, R, p, dirs = gate(S, L)
+    fails, R, p, dirs, lands = gate(S, L)
     if fails and not a.force:
         raise SystemExit(f"\n*** {len(fails)} GATE FAILURE(S): {fails}. NOT writing. The previous tables and "
                          "figures are left on disk. ***")
 
-    tab, nt = emit_tab_opt(S, R, p)
-    macros = emit_macros(S, L, R, p, dirs, nt)
+    tab, nt, st = emit_tab_opt(S, R, p)
+    macros = emit_macros(S, L, R, p, dirs, nt, st, lands)
     if "nan" in tab.lower() or "nan" in macros.lower():
         raise SystemExit("*** GATE FAILED: rendered LaTeX contains nan. NOT writing. ***")
     # A macro NAME with a digit in it is not a macro, it is a LaTeX error -- and it is silent here and fatal

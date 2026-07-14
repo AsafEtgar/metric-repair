@@ -260,7 +260,25 @@ def break_metric_graph(G, frac_q=0.1, direction="inflate", magnitude=2.0):
                 detour = nx.shortest_path_length(Gm, u, v, weight="weight")
             except nx.NetworkXNoPath:
                 continue                                        # bridge: not on any cycle -> can't be broken
-            _set(u, v, max(detour * magnitude, w0 * 1.001 + 1))
+            # THE INFLATION IS mu TIMES THE DETOUR, and there is NO ADDITIVE FLOOR. There must not be.
+            #
+            # This line used to read  max(detour * magnitude, w0 * 1.001 + 1).  That "+ 1" was a guard for
+            # INTEGER weights, where an edit has to survive int(round(.)). But RGG weights are Euclidean
+            # distances in the unit square -- every one below 0.12 -- so an ABSOLUTE 1 swamped mu*detour and
+            # every inflation landed at ~11.8x the detour NO MATTER WHAT magnitude WAS ASKED FOR. Measured
+            # across mu = 1.2, 1.5, 2, 3, 5, 10: effective mu was 11.77 at all six. The knob was inert, and
+            # the whole inflate magnitude sweep planted one corruption six times.
+            #
+            # It is the same bug as the `gap <= 1` guard on the deflate branch below, for the same reason:
+            # an absolute constant meets weights that are all smaller than it.
+            #
+            # On a metric base graph detour >= w(uv), so mu > 1 already forces a strict increase in float --
+            # no guard needed. Integer graphs still need one, but it must be relative to the DETOUR, not to
+            # w0: an edge is heavy when it exceeds its detour, and detour >= w0 makes that the stronger test.
+            target = detour * magnitude
+            if integer:
+                target = max(target, detour + 1)
+            _set(u, v, target)
             corrupted.add(_norm(u, v))
         elif dirn == "deflate":
             common = (set(H[u]) & set(H[v])) - {u, v}
