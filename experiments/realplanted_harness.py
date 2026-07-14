@@ -50,9 +50,11 @@ def run_one(task_index, outdir):
     return rh.run_one_rgg_task(task_index, outdir, GRID)
 
 
-def _effective_mu(G, H, B):
+def _effective_mu(G, H, B, take=None):
+    """The inflation ACTUALLY planted: w'(uv) / d_{G-uv}(u,v). Over a SAMPLE of B if one is given -- this runs
+    on a login node, and a full pass costs a graph copy plus a Dijkstra per edge (3.4 min on pbmc3k alone)."""
     out = []
-    for (u, v) in B:
+    for (u, v) in (take if take is not None else B):
         Gm = G.copy(); Gm.remove_edge(u, v)
         try:
             out.append(H[u][v]["weight"] / nx.shortest_path_length(Gm, u, v, weight="weight"))
@@ -98,38 +100,64 @@ def preflight():
     #     floor while 8.8% of its edges are not, some by a factor of 3. A floor is an absolute constant meeting
     #     a DISTRIBUTION of detours: it bites the short tail and leaves the middle alone, which is precisely
     #     the shape a median cannot see. Count the edges that MOVE.
+    #     IT RUNS ON A LOGIN NODE, SO IT HAS TO BE CHEAP -- AND THE FIRST VERSION WAS NOT.
+    #
+    #     It walked EVERY corrupted edge, copying the whole graph and running a Dijkstra for each, twice over.
+    #     On pbmc3k (n = 2,700, m = 31,639, |B| = 3,164) that is ~3.4 minutes of detours on top of ~2.6
+    #     minutes to load and break, and the whole preflight came to ~7 minutes. A login node either kills
+    #     that or the operator gives up on it -- and because submit_realplanted_dsq.sh refuses to build the
+    #     batch file unless the preflight exits 0, the array was never submitted at all. No batch file, no
+    #     sbatch, no CSVs. A preflight that is too expensive to run is a preflight that does not run.
+    #
+    #     SAMPLE the corrupted edges instead. We are estimating the FRACTION of edges the old floor moved;
+    #     200 draws pins that to about +/- 3.5 points at 95%, which is far tighter than the decision needs
+    #     (pbmc3k moves 8.8% of its edges; every other base moves 0.0%). The sample is reported, never hidden.
+    #     AND WE BREAK A SMALL FRACTION, NOT THE REAL ONE. break_metric_graph itself costs a graph copy plus a
+    #     Dijkstra per edge it inflates, so corrupting pbmc3k at the grid's frac_q = 0.10 (|B| = 3,164) takes
+    #     105 s on its own. The preflight is estimating a PER-EDGE property -- whether the old floor bound --
+    #     and that does not depend on how many edges are drawn. Draw 2%.
     mu = float(mags[0])
+    SAMPLE, PRE_FRAC = 200, 0.02
+    rng = np.random.default_rng(11)
     rows = []
     for b, T in loaded.items():
         ws = [d["weight"] for _, _, d in T.edges(data=True)]
         integer = all(isinstance(w, (int, np.integer)) for w in ws)
         seed_all(11)
-        Hn, Bn = break_metric_graph(T, frac_q=0.10, direction="inflate", magnitude=mu)
-        moved, worst = 0, 0.0
-        for (u, v) in Bn:
+        Hn, Bn = break_metric_graph(T, frac_q=PRE_FRAC, direction="inflate", magnitude=mu)
+        Bl = sorted(Bn)
+        take = Bl if len(Bl) <= SAMPLE else [Bl[i] for i in rng.choice(len(Bl), SAMPLE, replace=False)]
+        moved, worst, seen = 0, 0.0, 0
+        for (u, v) in take:
             Gm = T.copy(); Gm.remove_edge(u, v)
             try:
                 det = nx.shortest_path_length(Gm, u, v, weight="weight")
             except nx.NetworkXNoPath:
                 continue
+            seen += 1
             old = max(det * mu, T[u][v]["weight"] * 1.001 + 1)
             old = max(1, int(round(old))) if integer else float(old)
             new = Hn[u][v]["weight"]
             if abs(old - new) > 1e-9:
                 moved += 1
                 worst = max(worst, abs(old - new) / max(new, 1e-12))
-        rows.append((b, min(ws), max(ws), len(Bn), moved / max(len(Bn), 1), worst,
-                     _effective_mu(T, Hn, Bn)))
+        # divide by what we ACTUALLY looked at, not by |B| -- otherwise a 200-edge sample of a 3,164-edge
+        # planted set reports its damage 16x too low, and pbmc3k's 8.8% would read as 0.6% and be dismissed.
+        rows.append((b, min(ws), max(ws), len(Bn), len(take), moved / max(seen, 1), worst,
+                     _effective_mu(T, Hn, Bn, take)))
 
-    print(f"\n  {'base':<22}{'weight range':>20}{'|B|':>7}{'edges MOVED':>13}"
+    print(f"\n  probe: frac_q = {PRE_FRAC} (NOT the grid's {pts[0]['frac_q']}), "
+          f"up to {SAMPLE} edges checked per base -- this runs on a login node")
+    print(f"\n  {'base':<22}{'weight range':>19}{'probe |B|':>11}{'checked':>9}{'edges MOVED':>13}"
           f"{'worst rel':>11}{'new eff mu':>12}")
-    print("  " + "-" * 86)
+    print("  " + "-" * 92)
     damaged = []
-    for b, lo, hi, nb, frac, worst, ne in rows:
+    for b, lo, hi, nb, ns, frac, worst, ne in rows:
         if frac > 0:
             damaged.append(b)
-        print(f"  {b:<22}{f'[{lo:.3g}, {hi:.3g}]':>20}{nb:>7}{frac:>12.1%}{worst:>11.2f}{ne:>12.2f}")
-    off = [b for b, _, _, _, _, _, ne in rows if not abs(ne / mu - 1.0) < 0.02]
+        print(f"  {b:<22}{f'[{lo:.3g}, {hi:.3g}]':>19}{nb:>7}{ns:>9}{frac:>12.1%}"
+              f"{worst:>11.2f}{ne:>12.2f}")
+    off = [b for *_, ne in rows if not abs(ne / mu - 1.0) < 0.02]
     chk(not off, f"G3 the magnitude knob is LIVE on every base (asked {mu})",
         f"{len(rows) - len(off)} of {len(rows)} at {mu}" + (f"; STILL OFF: {off}" if off else ""))
     print(f"\n  DAMAGED by the old floor -- inflate and mixed arms must be re-run: {damaged or 'none'}")
